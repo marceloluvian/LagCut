@@ -1,0 +1,15 @@
+# Per-machine data written at runtime (yours, not the tool's source)
+whitelist.json
+state.json
+
+# Backups and logs
+*.bak
+*.bak-*
+*.log
+
+# Local dev / validation scripts (they toggle the firewall - not for distribution)
+SelfTest.ps1
+LiveTest.ps1
+
+# Internal design notes (not part of the shipped docs)
+PLAN.md
