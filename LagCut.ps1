@@ -139,6 +139,8 @@ $script:Msg = @{
 
     'list.title'       = @{ en='Whitelist ({0})'; es='Whitelist ({0})' }
     'list.empty'       = @{ en=' (empty) Enter here = Add; or use Detect/Programs'; es=' (vacia) Enter aqui = Agregar; o usa Detectar/Programas' }
+    'list.filter'      = @{ en=" filter: '{0}'   (Backspace edits, Esc clears)"; es=" filtro: '{0}'   (Backspace edita, Esc limpia)" }
+    'list.noresults'   = @{ en=' (no matches - Backspace/Esc clears)'; es=' (sin coincidencias - Backspace/Esc limpia)' }
 
     'det.title'        = @{ en='Detail'; es='Detalle' }
     'det.name'         = @{ en=' Name   : {0}'; es=' Nombre : {0}' }
@@ -168,7 +170,7 @@ $script:Msg = @{
     'gs.yes'           = @{ en='yes'; es='si' }
     'gs.no'            = @{ en='no'; es='no' }
 
-    'keys.main'        = @{ en=' Tab: switch zone | {0} move | {1} buttons | Enter: action | Space: on/off | Esc: quit'; es=' Tab: cambia zona | {0} mueve | {1} botones | Enter: accion | Space: on/off | Esc: salir' }
+    'keys.main'        = @{ en=' Tab: zone | {0} move | {1} buttons | Enter: action | Space: on/off | type: filter | Esc: clear/quit'; es=' Tab: zona | {0} mueve | {1} botones | Enter: accion | Space: on/off | escribe: filtra | Esc: limpia/sale' }
 
     'inst.header'      = @{ en=' INSTALLED PROGRAMS   {0}/{1}   {2}'; es=' PROGRAMAS INSTALADOS   {0}/{1}   {2}' }
     'inst.nofilter'    = @{ en='(no filter)'; es='(sin filtro)' }
@@ -177,7 +179,7 @@ $script:Msg = @{
     'inst.empty'       = @{ en=' (no results for that filter - [c] clears it)'; es=' (sin resultados con ese filtro - [c] lo limpia)' }
     'inst.title'       = @{ en='Programs'; es='Programas' }
     'inst.filtering'   = @{ en=' filter: {0}_   (type; Enter/Esc ends, Backspace deletes)'; es=' filtro: {0}_   (escribe; Enter/Esc termina, Backspace borra)' }
-    'keys.inst'        = @{ en=' [Enter] pick .exe  [/] filter  [c] clear filter  [Esc]/[b] back  (arrows/PgUp/PgDn move)'; es=' [Enter] elegir .exe  [/] filtrar  [c] limpiar filtro  [Esc]/[b] volver  (flechas/PgUp/PgDn mueven)' }
+    'keys.inst'        = @{ en=' [Enter] pick .exe   type: filter   [Esc] clear/back   (arrows/PgUp/PgDn move)'; es=' [Enter] elegir .exe   escribe: filtra   [Esc] limpia/vuelve   (flechas/PgUp/PgDn mueven)' }
 
     'modal.hint'       = @{ en='[y] yes    [n] no'; es='[s] si    [n] no' }
     'menu.title'       = @{ en='Action'; es='Accion' }
@@ -1081,6 +1083,7 @@ function Read-WhitelistItems {
     # always mirrors whitelist.json (order preserved -> Sel maps to file index).
     $items = @(Load-Whitelist)
     $out = New-Object System.Collections.Generic.List[object]
+    $i = 0
     foreach ($it in $items) {
         $type = "$($it.Type)"
         if (-not $type) { $type = 'Exe' }
@@ -1097,6 +1100,7 @@ function Read-WhitelistItems {
             }
         }
         $out.Add([pscustomobject]@{
+            Idx     = $i                 # position in whitelist.json (survives filtering)
             Name    = "$($it.Name)"
             Type    = $type
             Tag     = $tag
@@ -1104,6 +1108,7 @@ function Read-WhitelistItems {
             Enabled = [bool]$it.Enabled
             Missing = $missing
         })
+        $i++
     }
     # ToArray(): @() straight over a List[object] of PSObjects throws on PS 5.1.
     return $out.ToArray()
@@ -1160,6 +1165,20 @@ function Build-ActionBar($ctx, [int]$uw) {
     return $out
 }
 
+function Get-VisibleItems($ctx) {
+    # The whitelist rows currently shown: all of them, or the WlFilter matches.
+    $all = @($ctx.Items)
+    if ($ctx.WlFilter) { return @($all | Where-Object { $_.Name -match [regex]::Escape($ctx.WlFilter) }) }
+    return $all
+}
+
+function Get-SelectedIdx($ctx) {
+    # whitelist.json index of the selected (possibly filtered) row, or -1 if none.
+    $vis = @(Get-VisibleItems $ctx)
+    if ($vis.Count -eq 0 -or $ctx.Sel -lt 0 -or $ctx.Sel -ge $vis.Count) { return -1 }
+    return [int]$vis[$ctx.Sel].Idx
+}
+
 function Build-MainFrame($ctx, [int]$W, [int]$H) {
     $p  = $script:P
     $uw = $W - 1                     # avoid last-column wrap on legacy conhost
@@ -1186,7 +1205,7 @@ function Build-MainFrame($ctx, [int]$W, [int]$H) {
     $lines.Add((Build-ActionBar $ctx $uw))
 
     # ---- left pane rows (whitelist) ------------------------------------------
-    $items    = @($ctx.Items)
+    $items    = @(Get-VisibleItems $ctx)
     $listZone = ($ctx.Zone -eq 'list')
     $visible  = $panelRows - 2
     if ($visible -lt 1) { $visible = 1 }
@@ -1197,7 +1216,9 @@ function Build-MainFrame($ctx, [int]$W, [int]$H) {
     # each left row is pre-rendered to EXACTLY (lw-2) visible chars
     $leftPre = New-Object System.Collections.Generic.List[string]
     if ($items.Count -eq 0) {
-        $leftPre.Add($p.Dim + (Fit (L 'list.empty') ($lw - 2)) + $p.Reset)
+        $emsg = L 'list.empty'
+        if ($ctx.WlFilter) { $emsg = L 'list.noresults' }
+        $leftPre.Add($p.Dim + (Fit $emsg ($lw - 2)) + $p.Reset)
     } else {
         for ($i = $ctx.Scroll; $i -lt [Math]::Min($ctx.Scroll + $visible, $items.Count); $i++) {
             $it    = $items[$i]
@@ -1314,7 +1335,9 @@ function Build-MainFrame($ctx, [int]$W, [int]$H) {
     }
 
     # ---- message + key bar ---------------------------------------------------
-    $lines.Add(($p.Yellow + (Fit (' ' + $ctx.Msg) $uw) + $p.Reset))
+    $msgLine = ' ' + $ctx.Msg
+    if ($ctx.WlFilter) { $msgLine = L 'list.filter' $ctx.WlFilter }
+    $lines.Add(($p.Yellow + (Fit $msgLine $uw) + $p.Reset))
     $a = $script:ArrowUp + $script:ArrowDn
     $lr = $script:ArrowLt + $script:ArrowRt
     $keys = L 'keys.main' $a $lr
@@ -1337,7 +1360,7 @@ function Build-InstalledFrame($ctx, [int]$W, [int]$H) {
     $panelRows = $totalRows - 3
 
     $all   = @($ctx.Programs)
-    $view  = Get-InstalledView $ctx
+    $view  = @(Get-InstalledView $ctx)
     $total = $view.Count
 
     $flabel = L 'inst.nofilter'
@@ -1387,11 +1410,7 @@ function Build-InstalledFrame($ctx, [int]$W, [int]$H) {
         }
     }
 
-    if ($ctx.FilterMode) {
-        $lines.Add(($p.Inv + (Fit (L 'inst.filtering' $ctx.Filter) $uw) + $p.Reset))
-    } else {
-        $lines.Add(($p.Yellow + (Fit (' ' + $ctx.Msg) $uw) + $p.Reset))
-    }
+    $lines.Add(($p.Yellow + (Fit (' ' + $ctx.Msg) $uw) + $p.Reset))
     $lines.Add(($p.Inv + (Fit (L 'keys.inst') $uw) + $p.Reset))
     return $lines
 }
@@ -1528,8 +1547,10 @@ function New-TuiContext {
         Programs   = @()
         ISel       = 0
         IScroll    = 0
-        Filter     = ''
+        Filter     = ''              # installed-programs view filter
         FilterMode = $false
+        WlFilter   = ''              # whitelist (main list) filter
+        WlFilterMode = $false
     }
 }
 
@@ -1537,7 +1558,7 @@ function Invoke-TuiRefresh($ctx, [string]$msg) {
     $ctx.Items  = @(Read-WhitelistItems)
     $ctx.Global = Get-TuiGlobalState
     if ($PSBoundParameters.ContainsKey('msg') -and $null -ne $msg) { $ctx.Msg = $msg }
-    $count = @($ctx.Items).Count
+    $count = @(Get-VisibleItems $ctx).Count   # clamp to the filtered view, not the full list
     if ($ctx.Sel -ge $count -and $count -gt 0) { $ctx.Sel = $count - 1 }
     if ($ctx.Sel -lt 0) { $ctx.Sel = 0 }
 }
@@ -1580,9 +1601,10 @@ function Invoke-WhitelistMutation($ctx, [scriptblock]$body, [string]$doneMsg) {
 }
 
 function Invoke-ToggleSelected($ctx) {
+    $idx = Get-SelectedIdx $ctx
     $wl = @(Load-Whitelist)
-    if ($wl.Count -eq 0 -or $ctx.Sel -ge $wl.Count) { return }
-    $it = $wl[$ctx.Sel]
+    if ($idx -lt 0 -or $idx -ge $wl.Count) { return }
+    $it = $wl[$idx]
     $it.Enabled = -not $it.Enabled
     Save-Whitelist $wl
     $state = L 'state.off'
@@ -1592,10 +1614,10 @@ function Invoke-ToggleSelected($ctx) {
 }
 
 function Invoke-RemoveSelected($ctx) {
+    $idx = Get-SelectedIdx $ctx
     $wl = @(Load-Whitelist)
-    if ($wl.Count -eq 0 -or $ctx.Sel -ge $wl.Count) { return }
-    $victim = $wl[$ctx.Sel]
-    $idx = $ctx.Sel
+    if ($idx -lt 0 -or $idx -ge $wl.Count) { return }
+    $victim = $wl[$idx]
     Open-Modal $ctx @((L 'modal.remove' $victim.Name)) ({
         $cur = @(Load-Whitelist)
         $new = New-Object System.Collections.Generic.List[object]
@@ -1709,10 +1731,11 @@ function Invoke-ActionButton($ctx) {
 function Open-ContextMenu($ctx) {
     # Per-item actions (Enter on the list). With 0 items only 'Agregar por ruta'
     # is offered so add-by-path is always reachable without stray shortcuts.
-    $count = @($ctx.Items).Count
+    $vis = @(Get-VisibleItems $ctx)
+    $count = $vis.Count
     $mi = New-Object System.Collections.Generic.List[object]
     if ($count -gt 0 -and $ctx.Sel -lt $count) {
-        $it = $ctx.Items[$ctx.Sel]
+        $it = $vis[$ctx.Sel]
         $tgl = L 'menu.toggle_off'
         if (-not $it.Enabled) { $tgl = L 'menu.toggle_on' }
         $mi.Add(@{ Id = 'toggle'; Label = $tgl })
@@ -1742,9 +1765,9 @@ function Invoke-MenuKey($ctx, $k) {
                 'add'    { Invoke-AddEntryAction $ctx }
                 'remove' { Invoke-RemoveSelected $ctx }
                 'detail' {
-                    $count = @($ctx.Items).Count
-                    if ($count -gt 0 -and $ctx.Sel -lt $count) {
-                        $it = $ctx.Items[$ctx.Sel]
+                    $vis = @(Get-VisibleItems $ctx)
+                    if ($vis.Count -gt 0 -and $ctx.Sel -lt $vis.Count) {
+                        $it = $vis[$ctx.Sel]
                         $ctx.Msg = L 'msg.detail' $it.Name $it.Target
                     }
                 }
@@ -1780,7 +1803,7 @@ function Invoke-MainKey($ctx, $k) {
     }
 
     # list zone
-    $count = @($ctx.Items).Count
+    $count = @(Get-VisibleItems $ctx).Count
     switch ($k.Key) {
         'UpArrow'   { if ($ctx.Sel -gt 0) { $ctx.Sel-- } else { $ctx.Zone = 'actions' }; return }
         'DownArrow' { if ($ctx.Sel -lt ($count - 1)) { $ctx.Sel++ }; return }
@@ -1792,32 +1815,27 @@ function Invoke-MainKey($ctx, $k) {
         'Enter'     { Open-ContextMenu $ctx; return }
         'Delete'    { Invoke-RemoveSelected $ctx; return }
         'F5'        { Invoke-TuiRefresh $ctx (L 'msg.refreshed'); return }
-        'Escape'    { Invoke-QuitRequest $ctx; return }
+        'Backspace' {
+            if ($ctx.WlFilter.Length -gt 0) { $ctx.WlFilter = $ctx.WlFilter.Substring(0, $ctx.WlFilter.Length - 1); $ctx.Sel = 0; $ctx.Scroll = 0 }
+            return
+        }
+        'Escape'    {
+            if ($ctx.WlFilter) { $ctx.WlFilter = ''; $ctx.Sel = 0; $ctx.Scroll = 0 }
+            else { Invoke-QuitRequest $ctx }
+            return
+        }
     }
-    if (("$($k.KeyChar)").ToLowerInvariant() -eq 'q') { Invoke-QuitRequest $ctx }
+    # type-to-filter: any printable char extends the filter (no '/' needed). Space is the
+    # on/off shortcut (handled above), so it never enters the filter.
+    $ch = $k.KeyChar
+    if ($ch -and ([int]$ch) -ge 32) {
+        if (-not $ctx.WlFilter -and ("$ch").ToLowerInvariant() -eq 'q') { Invoke-QuitRequest $ctx; return }
+        $ctx.WlFilter += $ch; $ctx.Sel = 0; $ctx.Scroll = 0
+    }
 }
 
 function Invoke-InstalledKey($ctx, $k) {
-    if ($ctx.FilterMode) {
-        if ($k.Key -eq 'Enter' -or $k.Key -eq 'Escape') { $ctx.FilterMode = $false; return }
-        if ($k.Key -eq 'Backspace') {
-            if ($ctx.Filter.Length -gt 0) {
-                $ctx.Filter  = $ctx.Filter.Substring(0, $ctx.Filter.Length - 1)
-                $ctx.ISel    = 0
-                $ctx.IScroll = 0
-            }
-            return
-        }
-        $ch = $k.KeyChar
-        if ($ch -and ([int]$ch) -ge 32) {
-            $ctx.Filter += $ch
-            $ctx.ISel    = 0
-            $ctx.IScroll = 0
-        }
-        return
-    }
-
-    $view  = Get-InstalledView $ctx
+    $view  = @(Get-InstalledView $ctx)
     $count = $view.Count
     switch ($k.Key) {
         'UpArrow'   { if ($ctx.ISel -gt 0) { $ctx.ISel-- }; return }
@@ -1833,15 +1851,19 @@ function Invoke-InstalledKey($ctx, $k) {
             }
             return
         }
-        'Escape'    { $ctx.View = 'main'; Invoke-TuiRefresh $ctx (L 'msg.backmain'); return }
+        'Backspace' {
+            if ($ctx.Filter.Length -gt 0) { $ctx.Filter = $ctx.Filter.Substring(0, $ctx.Filter.Length - 1); $ctx.ISel = 0; $ctx.IScroll = 0 }
+            return
+        }
+        'Escape'    {
+            if ($ctx.Filter) { $ctx.Filter = ''; $ctx.ISel = 0; $ctx.IScroll = 0 }
+            else { $ctx.View = 'main'; Invoke-TuiRefresh $ctx (L 'msg.backmain') }
+            return
+        }
     }
-    switch (("$($k.KeyChar)").ToLowerInvariant()) {
-        '/' { $ctx.FilterMode = $true }
-        'c' { $ctx.Filter = ''; $ctx.ISel = 0; $ctx.IScroll = 0 }
-        'b' { $ctx.View = 'main'; Invoke-TuiRefresh $ctx (L 'msg.backmain') }
-        'q' { $ctx.View = 'main'; Invoke-TuiRefresh $ctx (L 'msg.backmain') }
-        default { }
-    }
+    # type-to-filter: any printable char extends the filter (no '/' needed).
+    $ch = $k.KeyChar
+    if ($ch -and ([int]$ch) -ge 32) { $ctx.Filter += $ch; $ctx.ISel = 0; $ctx.IScroll = 0 }
 }
 
 function Invoke-TuiLoop($ctx) {
