@@ -50,7 +50,7 @@ $s.TargetPath       = $ps
 $s.Arguments        = '-NoProfile -ExecutionPolicy Bypass -File "' + $target + '"'
 $s.WorkingDirectory = $here
 $s.WindowStyle      = 1
-$s.IconLocation     = (Join-Path $env:WINDIR 'System32\imageres.dll') + ',-114'
+$s.IconLocation     = (Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) 'lagcut.ico') + ',0'
 $s.Description      = (L 'tooltip')
 $s.Save()
 
