@@ -64,8 +64,13 @@ if (-not $ScriptPath) { $ScriptPath = $PSCommandPath }
 $Root       = Split-Path -Parent $ScriptPath
 $ListFile   = Join-Path $Root 'whitelist.json'
 $StateFile  = Join-Path $Root 'state.json'
+$ConfigFile = Join-Path $Root 'config.json'
 $OffScript  = Join-Path $Root 'LagCut-Off.ps1'
 $Profiles   = @('Domain','Private','Public')
+
+# Onboarding schema version. Bump when the wizard changes enough that a returning
+# user should see it again; a stored onboardedVersion below this re-triggers it.
+$OnboardVersion = 1
 
 # =====================================================================
 #  LOCALIZATION (en / es-419). Source stays 100% ASCII in both languages.
@@ -73,72 +78,72 @@ $Profiles   = @('Domain','Private','Public')
 # =====================================================================
 
 $script:Msg = @{
-    'elev.need'        = @{ en='Admin is required to change the firewall. Accept the UAC prompt...'; es='Se necesita admin para tocar el firewall. Acepta el aviso de UAC...' }
-    'elev.fail'        = @{ en='Could not elevate (UAC cancelled?). Close and try again.'; es='No se pudo elevar (cancelaste el UAC?). Cierra y vuelve a intentar.' }
+    'elev.need'        = @{ en='Changing the firewall needs admin rights. Accept the Windows (UAC) prompt to continue...'; es='Cambiar el firewall necesita permisos de administrador. Acepta el aviso de Windows (UAC) para continuar...' }
+    'elev.fail'        = @{ en='Could not get admin rights (UAC cancelled?). Close and try again.'; es='No se pudieron obtener permisos de administrador (cancelaste el UAC?). Cierra y vuelve a intentar.' }
 
-    'wl.corrupt'       = @{ en='  ! whitelist.json unreadable; backed up to {0} and starting empty.'; es='  ! whitelist.json ilegible; respaldado en {0} y empezando vacia.' }
+    'wl.corrupt'       = @{ en='  ! whitelist.json is unreadable; backed it up to {0} and starting with an empty allow list.'; es='  ! whitelist.json esta ilegible; lo respalde en {0} y empiezo con la lista de permitidos vacia.' }
 
-    'rule.uwpfail'     = @{ en='  ! Could not resolve UWP package: {0} (is Xbox installed?)'; es='  ! No pude resolver el paquete UWP: {0} (Xbox instalado?)' }
-    'rule.noexe'       = @{ en='  ! exe not found (skipped): {0}'; es='  ! No existe el exe (omitido): {0}' }
+    'rule.uwpfail'     = @{ en='  ! Could not find the UWP app: {0} (is Xbox installed?)'; es='  ! No encontre la app UWP: {0} (esta instalado Xbox?)' }
+    'rule.noexe'       = @{ en='  ! exe not found (skipped): {0}'; es='  ! No encontre el exe (omitido): {0}' }
 
-    'fs.m1fail'        = @{ en='  ! Fail-safe method 1 (ScheduledTasks) failed: {0}'; es='  ! Fail-safe metodo 1 (ScheduledTasks) fallo: {0}' }
-    'fs.m2fail'        = @{ en='  ! Fail-safe method 2 (schtasks) failed: {0}'; es='  ! Fail-safe metodo 2 (schtasks) fallo: {0}' }
+    'fs.m1fail'        = @{ en='  ! Fail-safe method 1 (ScheduledTasks) failed: {0}'; es='  ! Fallo el metodo 1 del seguro de reinicio (ScheduledTasks): {0}' }
+    'fs.m2fail'        = @{ en='  ! Fail-safe method 2 (schtasks) failed: {0}'; es='  ! Fallo el metodo 2 del seguro de reinicio (schtasks): {0}' }
 
-    'enable.emptywl'   = @{ en='  Your whitelist is EMPTY (or all off). Add/enable your games first (Detect/Programs).'; es='  Tu whitelist esta VACIA (o todo apagado). Agrega/enciende tus juegos primero (Detectar/Programas).' }
-    'dry.header'       = @{ en='  == PREVIEW (nothing is applied) =='; es='  == PREVISUALIZACION (no se aplica nada) ==' }
-    'dry.block'        = @{ en='  Would set DefaultOutboundAction=Block on: Domain, Private, Public'; es='  Se pondria DefaultOutboundAction=Block en: Domain, Private, Public' }
-    'dry.end'          = @{ en='  == end of preview =='; es='  == fin de la previsualizacion ==' }
-    'enable.statefail' = @{ en='  ! Could not write state.json ({0}). ABORTING without touching the firewall.'; es='  ! No pude escribir state.json ({0}). ABORTANDO sin tocar el firewall.' }
-    'enable.done'      = @{ en='  GAME MODE ON. Allowed: {0} game(s) + essentials (DNS/DHCP/LAN/ICMP/NTP).'; es='  MODO JUEGO ACTIVADO. Permitidos: {0} juego(s) + esenciales (DNS/DHCP/LAN/ICMP/NTP).' }
-    'enable.done2'     = @{ en='  Everything else (browsers, updates, cloud, telemetry) has NO internet until you deactivate.'; es='  Todo lo demas (navegadores, updates, nube, telemetria) SIN internet hasta desactivar.' }
-    'enable.note'      = @{ en="  Note: the network icon may say 'No internet' (NCSI probe blocked). That's NORMAL; the game still has network access."; es="  Nota: el icono de red puede decir 'Sin internet' (probe NCSI bloqueado). Es NORMAL; el juego si tiene red." }
-    'enable.fswarn1'   = @{ en='  ! HEADS UP: could not register the reboot fail-safe.'; es='  ! OJO: no se pudo registrar el fail-safe de reinicio.' }
-    'enable.fswarn2'   = @{ en='    If you reboot while active, restore with LagCut-Off.ps1 or the Deactivate button.'; es='    Si reinicias con el modo activo, restaura con LagCut-Off.ps1 o el boton Desactivar.' }
+    'enable.emptywl'   = @{ en='  Your allow list is EMPTY (or everything is off). Add or enable your games first (Detect / Programs).'; es='  Tu lista de permitidos esta VACIA (o todo esta apagado). Primero agrega o enciende tus juegos (Detectar / Programas).' }
+    'dry.header'       = @{ en='  == PREVIEW (nothing is applied) =='; es='  == VISTA PREVIA (no se aplica nada) ==' }
+    'dry.block'        = @{ en='  Would block outbound traffic on: Domain, Private, Public'; es='  Bloquearia la salida a internet en: Domain, Private, Public' }
+    'dry.end'          = @{ en='  == end of preview =='; es='  == fin de la vista previa ==' }
+    'enable.statefail' = @{ en='  ! Could not write state.json ({0}). Aborting without touching the firewall.'; es='  ! No pude escribir state.json ({0}). Cancelo sin tocar el firewall.' }
+    'enable.done'      = @{ en='  GAME MODE ON. Allowed: {0} game(s) + essentials (DNS/DHCP/LAN/ICMP/NTP).'; es='  MODO JUEGO ACTIVADO. Permitidos: {0} juego(s) + lo esencial (DNS/DHCP/LAN/ICMP/NTP).' }
+    'enable.done2'     = @{ en='  Everything else (browsers, updates, cloud, telemetry) has NO internet until you turn it off.'; es='  Todo lo demas (navegadores, actualizaciones, nube, telemetria) queda SIN internet hasta que lo desactives.' }
+    'enable.note'      = @{ en="  Note: the network icon may show 'No internet' (the NCSI check is blocked). That's NORMAL; your game still has a connection."; es="  Nota: el icono de red puede decir 'Sin internet' (se bloquea el chequeo NCSI). Es NORMAL; tu juego si tiene conexion." }
+    'enable.fswarn1'   = @{ en='  ! HEADS UP: could not set up the reboot fail-safe.'; es='  ! OJO: no se pudo configurar el seguro de reinicio.' }
+    'enable.fswarn2'   = @{ en='    If you reboot while it is on, restore the internet with LagCut-Off.ps1 or the Turn Off button.'; es='    Si reinicias con el modo activo, restaura el internet con LagCut-Off.ps1 o el boton Desactivar.' }
 
     'dis.dryprofile'   = @{ en='   [dry] {0} -> DefaultOutboundAction={1}'; es='   [dry] {0} -> DefaultOutboundAction={1}' }
     'dis.dryrule'      = @{ en='   [dry] Remove-NetFirewallRule -Group GameMode'; es='   [dry] Remove-NetFirewallRule -Group GameMode' }
     'dis.drytask'      = @{ en='   [dry] Unregister-ScheduledTask GameMode-FailSafe + delete state.json'; es='   [dry] Unregister-ScheduledTask GameMode-FailSafe + borrar state.json' }
-    'disable.done'     = @{ en='  GAME MODE OFF. Internet restored to its previous state for all programs.'; es='  MODO JUEGO DESACTIVADO. Internet restaurado al estado previo para todos los programas.' }
+    'disable.done'     = @{ en='  GAME MODE OFF. Internet restored to its previous state for every program.'; es='  MODO JUEGO DESACTIVADO. Internet restaurado al estado anterior para todos los programas.' }
 
-    'repair.working'   = @{ en='  Repairing: restoring outbound to its previous/Allow state and clearing rules...'; es='  Reparando: restaurando salida a su estado previo/Allow y limpiando reglas...' }
-    'repair.done'      = @{ en='  Done. State normalized (internet open, no GameMode rules).'; es='  Listo. Estado normalizado (internet abierto, sin reglas GameMode).' }
+    'repair.working'   = @{ en='  Repairing: restoring your outbound traffic and clearing the GameMode rules...'; es='  Reparando: restaurando tu salida a internet y limpiando las reglas GameMode...' }
+    'repair.done'      = @{ en='  Done. Everything is back to normal (internet open, no GameMode rules).'; es='  Listo. Todo quedo normal (internet abierto, sin reglas GameMode).' }
 
     'add.noexist'      = @{ en='  ! Not found: {0}'; es='  ! No existe: {0}' }
-    'add.notexe'       = @{ en='  ! Must be an .exe file.'; es='  ! Debe ser un archivo .exe.' }
-    'add.already'      = @{ en='  Already in the whitelist.'; es='  Ya estaba en la whitelist.' }
+    'add.notexe'       = @{ en='  ! It must be an .exe file.'; es='  ! Debe ser un archivo .exe.' }
+    'add.already'      = @{ en='  It is already in the allow list.'; es='  Ya esta en la lista de permitidos.' }
     'add.added'        = @{ en='  Added: {0}'; es='  Agregado: {0}' }
     'add.addeduwp'     = @{ en='  Added (UWP): {0}'; es='  Agregado (UWP): {0}' }
     'add.addedsvc'     = @{ en='  Added (service): {0}'; es='  Agregado (servicio): {0}' }
 
-    'seed.none'        = @{ en='  No games found in typical paths; add them by path or via the Programs view.'; es='  No encontre juegos en rutas tipicas; agregalos por ruta o con la vista Programas.' }
-    'seed.done'        = @{ en='  Detection complete. Check the whitelist (Xbox shows as UWP/service).'; es='  Deteccion completa. Revisa la whitelist (Xbox aparece como UWP/servicio).' }
+    'seed.none'        = @{ en='  No games found in the usual folders; add them by path or from the Programs view.'; es='  No encontre juegos en las carpetas tipicas; agregalos por ruta o desde la vista Programas.' }
+    'seed.done'        = @{ en='  Detection done. Check the allow list (Xbox shows up as UWP/service).'; es='  Deteccion lista. Revisa la lista de permitidos (Xbox aparece como UWP/servicio).' }
 
-    'rules.reapplied'  = @{ en='  Rules re-applied.'; es='  Reglas re-aplicadas.' }
+    'rules.reapplied'  = @{ en='  Rules re-applied.'; es='  Reglas actualizadas.' }
 
     'exe.searching'    = @{ en='  Looking for .exe of: {0} ...'; es='  Buscando .exe de: {0} ...' }
-    'exe.none'         = @{ en="  No .exe found; use 'Add by path' in the whitelist."; es="  No halle ningun .exe; usa 'Agregar por ruta' en la whitelist." }
-    'exe.prompt'       = @{ en="  which .exe (number, 'all', or enter=cancel)"; es="  cual .exe (numero, 'all', o enter=cancelar)" }
+    'exe.none'         = @{ en="  No .exe found; use 'Add by path' in the allow list."; es="  No encontre ningun .exe; usa 'Agregar por ruta' en la lista de permitidos." }
+    'exe.prompt'       = @{ en="  which .exe? (number, 'all', or Enter to cancel)"; es="  cual .exe? (numero, 'all', o Enter para cancelar)" }
 
     'badge.active'       = @{ en='  GAME MODE ON  '; es='  MODO JUEGO ACTIVO  ' }
-    'badge.inactive'     = @{ en='  INACTIVE (internet open)  '; es='  INACTIVO (internet abierto)  ' }
-    'badge.inconsistent' = @{ en='  INCONSISTENT (Repair)  '; es='  INCONSISTENTE (Reparar)  ' }
+    'badge.inactive'     = @{ en='  OFF (internet open)  '; es='  DESACTIVADO (internet abierto)  ' }
+    'badge.inconsistent' = @{ en='  NEEDS REPAIR  '; es='  NECESITA REPARAR  ' }
     'badge.unknown'      = @{ en='  UNKNOWN STATE  '; es='  ESTADO DESCONOCIDO  ' }
 
     'tiny.small'       = @{ en='  Window too small: {0}x{1} (min {2}x{3}).'; es='  Ventana muy chica: {0}x{1} (minimo {2}x{3}).' }
-    'tiny.grow'        = @{ en='  Enlarge the window to see the interface.'; es='  Agranda la ventana para ver la interfaz.' }
+    'tiny.grow'        = @{ en='  Make the window bigger to see the interface.'; es='  Agranda la ventana para ver la interfaz.' }
     'tiny.quit'        = @{ en='  [q] quit'; es='  [q] salir' }
 
     'hdr.title'        = @{ en=' GAME MODE (firewall) '; es=' MODO JUEGO (firewall) ' }
 
-    'action.activate'   = @{ en='Activate'; es='Activar' }
-    'action.deactivate' = @{ en='Deactivate'; es='Desactivar' }
+    'action.activate'   = @{ en='Turn On'; es='Activar' }
+    'action.deactivate' = @{ en='Turn Off'; es='Desactivar' }
     'action.seed'       = @{ en='Detect'; es='Detectar' }
     'action.installed'  = @{ en='Programs'; es='Programas' }
     'action.repair'     = @{ en='Repair'; es='Reparar' }
     'action.quit'       = @{ en='Quit'; es='Salir' }
 
-    'list.title'       = @{ en='Whitelist ({0})'; es='Whitelist ({0})' }
-    'list.empty'       = @{ en=' (empty) Enter here = Add; or use Detect/Programs'; es=' (vacia) Enter aqui = Agregar; o usa Detectar/Programas' }
+    'list.title'       = @{ en='Allow list ({0})'; es='Permitidos ({0})' }
+    'list.empty'       = @{ en=' (empty) Enter here = add; or use Detect / Programs'; es=' (vacia) Enter aqui = agregar; o usa Detectar / Programas' }
     'list.filter'      = @{ en=" filter: '{0}'   (Backspace edits, Esc clears)"; es=" filtro: '{0}'   (Backspace edita, Esc limpia)" }
     'list.noresults'   = @{ en=' (no matches - Backspace/Esc clears)'; es=' (sin coincidencias - Backspace/Esc limpia)' }
 
@@ -147,39 +152,39 @@ $script:Msg = @{
     'det.type'         = @{ en=' Type   : {0}'; es=' Tipo   : {0}' }
     'det.target'       = @{ en=' Target : {0}'; es=' Destino: {0}' }
     'det.state'        = @{ en=' State  : {0}'; es=' Estado : {0}' }
-    'det.file_missing' = @{ en=' File   : DOES NOT EXIST (skipped on activate)'; es=' Archivo: NO EXISTE (se omite al activar)' }
+    'det.file_missing' = @{ en=' File   : MISSING (skipped when you turn on)'; es=' Archivo: NO EXISTE (se omite al activar)' }
     'det.file_ok'      = @{ en=' File   : OK'; es=' Archivo: OK' }
-    'det.none'         = @{ en=' (no selection)'; es=' (sin seleccion)' }
+    'det.none'         = @{ en=' (nothing selected)'; es=' (no hay seleccion)' }
     'type.exe'         = @{ en='Exe (.exe)'; es='Exe (.exe)' }
-    'type.pkg'         = @{ en='Package (UWP)'; es='Package (UWP)' }
-    'type.svc'         = @{ en='Service (Windows)'; es='Service (Windows)' }
+    'type.pkg'         = @{ en='Package (UWP)'; es='Paquete (UWP)' }
+    'type.svc'         = @{ en='Service (Windows)'; es='Servicio (Windows)' }
     'state.on'         = @{ en='on'; es='encendido' }
     'state.off'        = @{ en='off'; es='apagado' }
 
-    'gs.title'         = @{ en='Global state'; es='Estado global' }
+    'gs.title'         = @{ en='Global state'; es='Estado general' }
     'gs.rules'         = @{ en=' Rules   : {0} (group {1})'; es=' Reglas  : {0} (grupo {1})' }
     'gs.state_yes'     = @{ en='present (reversible)'; es='presente (reversible)' }
     'gs.state_no'      = @{ en='no'; es='no' }
     'gs.statejson'     = @{ en=' state.json : {0}'; es=' state.json : {0}' }
-    'gs.fs_yes'        = @{ en='registered (AtStartup)'; es='registrada (AtStartup)' }
-    'gs.fs_no'         = @{ en='not registered'; es='no registrada' }
-    'gs.failsafe'      = @{ en=' Fail-safe  : {0}'; es=' Fail-safe  : {0}' }
-    'gs.diag1'         = @{ en=' ! Diagnostic: profiles Block={0}/3,'; es=' ! Diagnostico: perfiles en Block={0}/3,' }
+    'gs.fs_yes'        = @{ en='registered (at startup)'; es='registrado (al iniciar)' }
+    'gs.fs_no'         = @{ en='not registered'; es='no registrado' }
+    'gs.failsafe'      = @{ en=' Fail-safe  : {0}'; es=' Seguro de reinicio : {0}' }
+    'gs.diag1'         = @{ en=' ! Diagnostic: profiles at Block={0}/3,'; es=' ! Diagnostico: perfiles en Block={0}/3,' }
     'gs.diag2'         = @{ en='   GameMode rules={0}, state.json={1}'; es='   reglas GameMode={0}, state.json={1}' }
-    'gs.diag3'         = @{ en='   use the Repair button to normalize'; es='   usa el boton Reparar para normalizar' }
+    'gs.diag3'         = @{ en='   use More > Repair to fix it'; es='   usa Mas > Reparar para arreglarlo' }
     'gs.yes'           = @{ en='yes'; es='si' }
     'gs.no'            = @{ en='no'; es='no' }
 
-    'keys.main'        = @{ en=' Tab: zone | {0} move | {1} buttons | Enter: action | Space: on/off | type: filter | Esc: clear/quit'; es=' Tab: zona | {0} mueve | {1} botones | Enter: accion | Space: on/off | escribe: filtra | Esc: limpia/sale' }
+    'keys.main'        = @{ en=' Tab: zone | {0} move | {1} buttons | Enter: action | Space: on/off | type: filter | Esc: clear/quit'; es=' Tab: zona | {0} mueve | {1} botones | Enter: accion | Espacio: on/off | escribe: filtra | Esc: limpia/sale' }
 
     'inst.header'      = @{ en=' INSTALLED PROGRAMS   {0}/{1}   {2}'; es=' PROGRAMAS INSTALADOS   {0}/{1}   {2}' }
     'inst.nofilter'    = @{ en='(no filter)'; es='(sin filtro)' }
     'inst.filter'      = @{ en="filter: '{0}'"; es="filtro: '{0}'" }
     'inst.noloc'       = @{ en='(no location)'; es='(sin ubicacion)' }
-    'inst.empty'       = @{ en=' (no results for that filter - [c] clears it)'; es=' (sin resultados con ese filtro - [c] lo limpia)' }
+    'inst.empty'       = @{ en=' (no results for that filter - Esc clears it)'; es=' (sin resultados con ese filtro - Esc lo limpia)' }
     'inst.title'       = @{ en='Programs'; es='Programas' }
     'inst.filtering'   = @{ en=' filter: {0}_   (type; Enter/Esc ends, Backspace deletes)'; es=' filtro: {0}_   (escribe; Enter/Esc termina, Backspace borra)' }
-    'keys.inst'        = @{ en=' [Enter] pick .exe   type: filter   [Esc] clear/back   (arrows/PgUp/PgDn move)'; es=' [Enter] elegir .exe   escribe: filtra   [Esc] limpia/vuelve   (flechas/PgUp/PgDn mueven)' }
+    'keys.inst'        = @{ en=' [Enter] pick .exe   type: filter   [Esc] clear/back   (arrows/PgUp/PgDn move)'; es=' [Enter] elige .exe   escribe: filtra   [Esc] limpia/vuelve   (flechas/PgUp/PgDn mueven)' }
 
     'modal.hint'       = @{ en='[y] yes    [n] no'; es='[s] si    [n] no' }
     'menu.title'       = @{ en='Action'; es='Accion' }
@@ -189,66 +194,136 @@ $script:Msg = @{
     'menu.detail'      = @{ en='View detail'; es='Ver detalle' }
     'menu.remove'      = @{ en='Remove'; es='Quitar' }
 
-    'line.back'        = @{ en='  (press a key to return to the interface)'; es='  (presiona una tecla para volver a la interfaz)' }
+    'line.back'        = @{ en='  (press any key to return to the interface)'; es='  (presiona cualquier tecla para volver a la interfaz)' }
 
-    'msg.hello'        = @{ en='Tab switches buttons and list. Enter opens actions for the selected game.'; es='Tab cambia entre botones y lista. Enter abre acciones del juego seleccionado.' }
-    'msg.reapplied'    = @{ en='Rules re-applied.'; es='Reglas re-aplicadas.' }
-    'msg.refreshed'    = @{ en='State refreshed.'; es='Estado refrescado.' }
+    'msg.hello'        = @{ en='Tab switches between buttons and list. Enter opens actions for the selected game.'; es='Tab cambia entre botones y lista. Enter abre las acciones del juego seleccionado.' }
+    'msg.reapplied'    = @{ en='Rules re-applied.'; es='Reglas actualizadas.' }
+    'msg.refreshed'    = @{ en='State refreshed.'; es='Estado actualizado.' }
     'msg.menuclosed'   = @{ en='Menu closed.'; es='Menu cerrado.' }
     'msg.detail'       = @{ en='Detail of "{0}": {1}'; es='Detalle de "{0}": {1}' }
     'msg.toggle'       = @{ en='"{0}" {1}.'; es='"{0}" {1}.' }
     'msg.removed'      = @{ en='Removed: {0}'; es='Quitado: {0}' }
-    'msg.wlupdated'    = @{ en='Whitelist updated.'; es='Whitelist actualizada.' }
-    'msg.seeddone'     = @{ en='Detection complete.'; es='Deteccion completa.' }
-    'msg.emptyactivate'= @{ en='Whitelist empty or all off; add/enable games first (Detect/Programs).'; es='Whitelist vacia o todo apagado; agrega/enciende juegos primero (Detectar/Programas).' }
+    'msg.wlupdated'    = @{ en='Allow list updated.'; es='Lista de permitidos actualizada.' }
+    'msg.seeddone'     = @{ en='Detection done.'; es='Deteccion lista.' }
+    'msg.emptyactivate'= @{ en='Allow list is empty or all off; add or enable games first (Detect / Programs).'; es='La lista de permitidos esta vacia o todo esta apagado; primero agrega o enciende juegos (Detectar / Programas).' }
     'msg.ready'        = @{ en='Done.'; es='Listo.' }
-    'msg.alreadyinactive' = @{ en='Mode was already inactive. Nothing to restore.'; es='El modo ya estaba inactivo. Nada que restaurar.' }
+    'msg.alreadyinactive' = @{ en='It was already off. Nothing to restore.'; es='Ya estaba desactivado. Nada que restaurar.' }
     'msg.inetrestored' = @{ en='Internet restored.'; es='Internet restaurado.' }
-    'msg.normalized'   = @{ en='State normalized.'; es='Estado normalizado.' }
-    'msg.reading'      = @{ en='Reading installed programs...'; es='Leyendo programas instalados...' }
-    'msg.installedhint'= @{ en='Enter adds the selected program to the whitelist.'; es='Enter agrega el programa seleccionado a la whitelist.' }
+    'msg.normalized'   = @{ en='Everything back to normal.'; es='Todo quedo normal.' }
+    'msg.reading'      = @{ en='Reading installed programs...'; es='Leyendo los programas instalados...' }
+    'msg.installedhint'= @{ en='Enter adds the selected program to the allow list.'; es='Enter agrega el programa seleccionado a la lista de permitidos.' }
     'msg.backmain'     = @{ en='Back to the main panel.'; es='De vuelta al panel principal.' }
-    'msg.donerevisit'  = @{ en='Done; check the whitelist when you go back ([Esc]).'; es='Listo; revisa la whitelist al volver ([Esc]).' }
+    'msg.donerevisit'  = @{ en='Done; check the allow list when you go back ([Esc]).'; es='Listo; revisa la lista de permitidos al volver ([Esc]).' }
     'msg.langchanged'  = @{ en='Language: English'; es='Idioma: Espanol' }
+    'msg.themechanged' = @{ en='Theme: {0}'; es='Tema: {0}' }
 
-    'modal.reapply1'   = @{ en='Mode is ACTIVE. Re-apply rules now'; es='El modo esta ACTIVO. Re-aplicar reglas ahora' }
-    'modal.reapply2'   = @{ en='so the change takes effect?'; es='para que el cambio surta efecto?' }
-    'modal.remove'     = @{ en='Remove "{0}" from the whitelist?'; es='Quitar "{0}" de la whitelist?' }
-    'modal.activate1'  = @{ en='{0} game(s) + essentials will be allowed'; es='Se permitiran {0} juego(s) + esenciales' }
-    'modal.activate2'  = @{ en='(DNS/DHCP/LAN/ICMP/NTP). Everything else will'; es='(DNS/DHCP/LAN/ICMP/NTP). TODO lo demas quedara' }
-    'modal.activate3'  = @{ en='have NO internet until you deactivate.'; es='sin internet hasta que desactives.' }
-    'modal.activate4'  = @{ en='Activate game mode now?'; es='Activar el modo juego ahora?' }
-    'modal.repair1'    = @{ en='Repair: restore internet and clear'; es='Reparar: restaurar internet y limpiar' }
+    'theme.neon'       = @{ en='Neon'; es='Neon' }
+    'theme.sobrio'     = @{ en='Sober'; es='Sobrio' }
+
+    'action.more'      = @{ en='More'; es='Mas' }
+
+    'menu.system.title'= @{ en='More'; es='Mas' }
+    'menu.repair'      = @{ en='Repair'; es='Reparar' }
+    'menu.wizard'      = @{ en='Setup assistant'; es='Asistente' }
+    'menu.theme'       = @{ en='Switch theme'; es='Cambiar tema' }
+    'menu.reset'       = @{ en='Reset settings'; es='Reiniciar configuracion' }
+
+    'wizard.title'     = @{ en='Setup assistant'; es='Asistente' }
+    'wizard.header'    = @{ en='step {0}/{1}'; es='paso {0}/{1}' }
+    'wizard.step.language' = @{ en='Language'; es='Idioma' }
+    'wizard.lang.hint' = @{ en='Choose the language for LagCut.'; es='Elige el idioma de LagCut.' }
+    'wizard.lang.en'   = @{ en='English'; es='English' }
+    'wizard.lang.es'   = @{ en='Espanol (Spanish)'; es='Espanol' }
+    'wizard.step.welcome'  = @{ en='Welcome'; es='Bienvenida' }
+    'wizard.step.theme'    = @{ en='Choose a theme'; es='Elige un tema' }
+    'wizard.step.profiles' = @{ en='Pick your profiles'; es='Elige tus perfiles' }
+    'wizard.step.preview'  = @{ en='Apps to allow'; es='Apps a permitir' }
+    'wizard.step.summary'  = @{ en='All set'; es='Listo' }
+
+    'wizard.welcome1'  = @{ en='LagCut frees your bandwidth for gaming: it blocks'; es='LagCut libera tu ancho de banda para jugar: bloquea' }
+    'wizard.welcome2'  = @{ en='background internet for everything except the apps'; es='el internet de fondo de todo, salvo las apps que tu' }
+    'wizard.welcome3'  = @{ en='you allow. This assistant only reads your apps and'; es='permitas. Este asistente solo lee tus apps y guarda' }
+    'wizard.welcome4'  = @{ en='saves your list. It never turns the firewall on.'; es='tu lista; NUNCA activa el firewall por si solo.' }
+
+    'wizard.theme.neon'   = @{ en='vivid, saturated colors'; es='colores vivos y saturados' }
+    'wizard.theme.sobrio' = @{ en='calm, softer colors'; es='colores mas tenues y suaves' }
+
+    'wizard.noapps'    = @{ en='No apps detected for the chosen profiles.'; es='No detecte apps para los perfiles elegidos.' }
+    'wizard.summary'   = @{ en='Added {0} program(s) to your allow list.'; es='Agregue {0} programa(s) a tu lista de permitidos.' }
+    'wizard.finishhint'= @{ en='Press Enter to finish.'; es='Presiona Enter para terminar.' }
+    'wizard.detecting' = @{ en='Detecting apps for the chosen profiles...'; es='Detectando apps de los perfiles elegidos...' }
+    'wizard.previewhint'=@{ en='Space toggles an app; Enter or [g] saves the ticked ones.'; es='Espacio marca/desmarca una app; Enter o [g] guarda las marcadas.' }
+    'wizard.savedmsg'  = @{ en='Saved {0} app(s) to the allow list.'; es='Guarde {0} app(s) en la lista de permitidos.' }
+    'wizard.saved'     = @{ en='  Added {0} program(s) to the allow list.'; es='  Agregue {0} programa(s) a la lista de permitidos.' }
+    'wizard.done'      = @{ en='Setup complete.'; es='Configuracion terminada.' }
+
+    'wizard.keys.0'    = @{ en=' Up/Down: choose    Enter: continue    Esc: skip'; es=' Arriba/Abajo: elige    Enter: continuar    Esc: omitir' }
+    'wizard.keys.1'    = @{ en=' Enter: continue    Esc: back'; es=' Enter: continuar    Esc: atras' }
+    'wizard.keys.2'    = @{ en=' Up/Down: choose    Enter: continue    Esc: back'; es=' Arriba/Abajo: elige    Enter: continuar    Esc: atras' }
+    'wizard.keys.3'    = @{ en=' Up/Down: move    Space: toggle    Enter: continue    Esc: back'; es=' Arriba/Abajo: mueve    Espacio: marca    Enter: continuar    Esc: atras' }
+    'wizard.keys.4'    = @{ en=' Up/Down: move    Space: toggle    Enter/[g]: save    Esc: back'; es=' Arriba/Abajo: mueve    Espacio: marca    Enter/[g]: guarda    Esc: atras' }
+    'wizard.keys.5'    = @{ en=' Enter: finish    Esc: back'; es=' Enter: terminar    Esc: atras' }
+
+    'profile.games'    = @{ en='Games'; es='Juegos' }
+    'profile.games.desc'   = @{ en='launchers and game clients'; es='launchers y clientes de juego' }
+    'profile.browsers' = @{ en='Browsers'; es='Navegadores' }
+    'profile.browsers.desc'= @{ en='Chrome, Edge, Firefox, etc.'; es='Chrome, Edge, Firefox, etc.' }
+    'profile.dev'      = @{ en='Programming'; es='Programacion' }
+    'profile.dev.desc'     = @{ en='editors, IDEs, terminals, tools'; es='editores, IDEs, terminales, herramientas' }
+    'profile.design'   = @{ en='Design'; es='Diseno' }
+    'profile.design.desc'  = @{ en='Photoshop, Figma, Blender, etc.'; es='Photoshop, Figma, Blender, etc.' }
+    'profile.ai'       = @{ en='AI'; es='IA' }
+    'profile.ai.desc'      = @{ en='AI apps and your default browser'; es='apps de IA y tu navegador predeterminado' }
+    'profile.work'     = @{ en='Work/Comms'; es='Trabajo/Comunicacion' }
+    'profile.work.desc'    = @{ en='Office, Teams, Slack, Zoom, etc.'; es='Office, Teams, Slack, Zoom, etc.' }
+
+    'reset.confirm1'   = @{ en='Reset your settings? This clears your saved'; es='Reiniciar la configuracion? Esto borra tus' }
+    'reset.confirm2'   = @{ en='preferences and reopens the assistant.'; es='preferencias y reabre el asistente.' }
+    'reset.wl1'        = @{ en='Also EMPTY the allow list to start clean?'; es='Tambien VACIAR la lista de permitidos para empezar limpio?' }
+    'reset.wl2'        = @{ en='[y] empty it    [n] keep your apps'; es='[s] la vacia    [n] conserva tus apps' }
+    'reset.donewl'     = @{ en='Settings and allow list cleared.'; es='Configuracion y lista de permitidos reiniciadas.' }
+    'reset.donecfg'    = @{ en='Settings reset (allow list kept).'; es='Configuracion reiniciada (lista de permitidos intacta).' }
+
+    'modal.reapply1'   = @{ en='Game mode is ON. Re-apply the rules now'; es='El modo juego esta ACTIVO. Reaplicar las reglas ahora' }
+    'modal.reapply2'   = @{ en='so your change takes effect?'; es='para que tu cambio surta efecto?' }
+    'modal.remove'     = @{ en='Remove "{0}" from the allow list?'; es='Quitar "{0}" de la lista de permitidos?' }
+    'modal.activate1'  = @{ en='{0} game(s) + essentials will be allowed'; es='Se permitiran {0} juego(s) + lo esencial' }
+    'modal.activate2'  = @{ en='(DNS/DHCP/LAN/ICMP/NTP). Everything else'; es='(DNS/DHCP/LAN/ICMP/NTP). Todo lo demas' }
+    'modal.activate3'  = @{ en='will have NO internet until you turn it off.'; es='quedara SIN internet hasta que lo desactives.' }
+    'modal.activate4'  = @{ en='Turn game mode on now?'; es='Activar el modo juego ahora?' }
+    'modal.repair1'    = @{ en='Repair: restore the internet and clear'; es='Reparar: restaurar el internet y limpiar' }
     'modal.repair2'    = @{ en='the GameMode rules?'; es='las reglas GameMode?' }
     'modal.quit1'      = @{ en='HEADS UP: GAME MODE is still ON; the block'; es='OJO: el MODO JUEGO sigue ACTIVO; el bloqueo' }
-    'modal.quit2'      = @{ en='CONTINUES even if you close this window.'; es='CONTINUA aunque cierres esta ventana.' }
-    'modal.quit3'      = @{ en='Deactivate now before exiting?'; es='Desactivar ahora antes de salir?' }
+    'modal.quit2'      = @{ en='STAYS even if you close this window.'; es='CONTINUA aunque cierres esta ventana.' }
+    'modal.quit3'      = @{ en='Turn it off now before exiting?'; es='Desactivarlo ahora antes de salir?' }
 
     'addline.header'   = @{ en='==================== ADD BY PATH ===================='; es='==================== AGREGAR POR RUTA ====================' }
     'addline.name'     = @{ en='  name'; es='  nombre' }
     'addline.path'     = @{ en='  path to the .exe'; es='  ruta al .exe' }
     'addline.cancel'   = @{ en='  Cancelled (empty name or path).'; es='  Cancelado (nombre o ruta vacios).' }
-    'seedline.header'  = @{ en='==================== AUTO-DETECT GAMES ===================='; es='==================== AUTO-DETECTAR JUEGOS ====================' }
+    'seedline.header'  = @{ en='==================== AUTO-DETECT GAMES ===================='; es='==================== AUTODETECTAR JUEGOS ====================' }
 
-    'disp.dryactivate' = @{ en='== DRY-RUN: ACTIVATE preview =='; es='== DRY-RUN: previsualizacion de ACTIVAR ==' }
-    'disp.drydeactivate'=@{ en='== DRY-RUN: DEACTIVATE preview =='; es='== DRY-RUN: previsualizacion de DESACTIVAR ==' }
-    'disp.offhdr'      = @{ en='== Deactivating GAME MODE (restoring internet) =='; es='== Desactivando MODO JUEGO (restaurando internet) ==' }
-    'disp.offalready'  = @{ en='  Already inactive. Nothing to restore.'; es='  Ya estaba inactivo. Nada que restaurar.' }
+    'disp.dryactivate' = @{ en='== DRY-RUN: turn-on preview =='; es='== DRY-RUN: vista previa de ACTIVAR ==' }
+    'disp.drydeactivate'=@{ en='== DRY-RUN: turn-off preview =='; es='== DRY-RUN: vista previa de DESACTIVAR ==' }
+    'disp.offhdr'      = @{ en='== Turning GAME MODE off (restoring internet) =='; es='== Desactivando MODO JUEGO (restaurando internet) ==' }
+    'disp.offalready'  = @{ en='  Already off. Nothing to restore.'; es='  Ya estaba desactivado. Nada que restaurar.' }
     'disp.offdone'     = @{ en='  Internet restored.'; es='  Internet restaurado.' }
-    'disp.onhdr'       = @{ en='== Activating GAME MODE =='; es='== Activando MODO JUEGO ==' }
-    'disp.fshdr'       = @{ en='== Registering reboot fail-safe (without touching the firewall) =='; es='== Registrando fail-safe de reinicio (sin tocar el firewall) ==' }
+    'disp.onhdr'       = @{ en='== Turning GAME MODE on =='; es='== Activando MODO JUEGO ==' }
+    'disp.fshdr'       = @{ en='== Setting up the reboot fail-safe (without touching the firewall) =='; es='== Configurando el seguro de reinicio (sin tocar el firewall) ==' }
     'disp.fsok'        = @{ en='  OK: GameMode-FailSafe task registered.'; es='  OK: tarea GameMode-FailSafe registrada.' }
-    'disp.fsfail'      = @{ en='  FAILED: could not register the fail-safe (see the error above).'; es='  FALLO: no se pudo registrar el fail-safe (revisa el error de arriba).' }
+    'disp.fsfail'      = @{ en='  FAILED: could not set up the fail-safe (see the error above).'; es='  FALLO: no se pudo configurar el seguro de reinicio (revisa el error de arriba).' }
 
-    'exit.err'         = @{ en='  INTERFACE ERROR: {0}'; es='  ERROR en la interfaz: {0}' }
+    'exit.err'         = @{ en='  INTERFACE ERROR: {0}'; es='  ERROR de interfaz: {0}' }
     'exit.errhint'     = @{ en='  If an action was interrupted, check the state when reopening (Repair) or run LagCut-Off.ps1.'; es='  Si una accion quedo a medias, revisa el estado al reabrir (Reparar) o usa LagCut-Off.ps1.' }
     'exit.stillon1'    = @{ en='  HEADS UP: you left GAME MODE ON. The block STAYS even if you close this window.'; es='  OJO: dejaste el MODO JUEGO ACTIVO. El bloqueo SIGUE aunque cierres esta ventana.' }
-    'exit.stillon2'    = @{ en='  To restore internet: reopen and use Deactivate, or run LagCut-Off.ps1.'; es='  Para restaurar internet: vuelve a abrir y usa Desactivar, o corre LagCut-Off.ps1.' }
+    'exit.stillon2'    = @{ en='  To restore the internet: reopen and use Turn Off, or run LagCut-Off.ps1.'; es='  Para restaurar el internet: vuelve a abrir y usa Desactivar, o corre LagCut-Off.ps1.' }
     'exit.bye'         = @{ en='  Exiting.'; es='  Saliendo.' }
 }
 
-function Resolve-Lang([string]$override) {
-    if ($override) { return $override.ToLowerInvariant() }
+function Resolve-Lang([string]$override, [string]$configLang) {
+    # Priority: explicit -Lang flag > saved config > Windows culture > English.
+    if ($override)   { return $override.ToLowerInvariant() }
+    if ($configLang -and ($configLang -eq 'en' -or $configLang -eq 'es')) { return $configLang }
     try { if ((Get-Culture).TwoLetterISOLanguageName -eq 'es') { return 'es' } } catch {}
     return 'en'
 }
@@ -264,7 +339,69 @@ function L([string]$key) {
     return $s
 }
 
-$script:Lang = Resolve-Lang $Lang
+# =====================================================================
+#  CONFIG (user preferences: onboarding, language, theme, chosen profiles)
+#  Mirrors the whitelist storage pattern: tolerant read, -InputObject write.
+#  This file NEVER touches the firewall; onboarding only reads apps and writes
+#  whitelist.json / config.json.
+# =====================================================================
+
+function New-DefaultConfig {
+    [pscustomobject]@{
+        onboardedVersion = 0
+        lang             = ''
+        theme            = 'Neon'
+        profiles         = @()
+    }
+}
+
+function Load-Config {
+    $cfg = New-DefaultConfig
+    if (Test-Path $ConfigFile) {
+        try {
+            $raw = Get-Content $ConfigFile -Raw -ErrorAction Stop
+            if ($raw -and $raw.Trim()) {
+                $data = $raw | ConvertFrom-Json -ErrorAction Stop
+                if ($data) {
+                    if ($data.PSObject.Properties['onboardedVersion']) {
+                        $iv = 0; [void][int]::TryParse("$($data.onboardedVersion)", [ref]$iv); $cfg.onboardedVersion = $iv
+                    }
+                    if ($data.PSObject.Properties['lang']  -and $data.lang)  { $cfg.lang  = "$($data.lang)" }
+                    if ($data.PSObject.Properties['theme'] -and $data.theme) { $cfg.theme = "$($data.theme)" }
+                    if ($data.PSObject.Properties['profiles'] -and $data.profiles) { $cfg.profiles = @($data.profiles | ForEach-Object { "$_" }) }
+                }
+            }
+        } catch {
+            # Corrupt config: back it up and fall back to defaults (never crash).
+            $bak = $ConfigFile + '.bak'
+            try { Copy-Item $ConfigFile $bak -Force } catch {}
+        }
+    }
+    return $cfg
+}
+
+function Save-Config($cfg) {
+    $dir = Split-Path -Parent $ConfigFile
+    if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+    # PS 5.1: pass via -InputObject (piping a single object is fine, but keep the
+    # same explicit form as Save-Whitelist for consistency).
+    ConvertTo-Json -InputObject $cfg -Depth 5 | Set-Content -LiteralPath $ConfigFile -Encoding UTF8
+}
+
+function Remove-Config {
+    if (Test-Path $ConfigFile) { Remove-Item $ConfigFile -Force -ErrorAction SilentlyContinue }
+}
+
+function Test-Onboarded {
+    # First run = config.json missing or its onboardedVersion below the current one.
+    param($cfg)
+    if (-not $cfg) { $cfg = Load-Config }
+    return ([int]$cfg.onboardedVersion -ge [int]$OnboardVersion)
+}
+
+$script:Config = Load-Config
+$script:Lang   = Resolve-Lang $Lang $script:Config.lang
+$script:Theme  = if ($script:Config.theme -eq 'Sobrio' -or $script:Config.theme -eq 'Neon') { $script:Config.theme } else { 'Neon' }
 
 # ---- self-elevate (UAC) -------------------------------------------------------
 function Test-Admin {
@@ -877,6 +1014,277 @@ function Seed-KnownGames {
 }
 
 # =====================================================================
+#  ONBOARDING CATALOG + PROFILE-BASED APP RESOLUTION
+#  Stable profile keys map to localized names via L 'profile.<key>'. Each
+#  profile lists combinable matchers; Resolve-ProfileApps runs them read-only
+#  and returns DETECTED apps as data. It NEVER writes the whitelist or touches
+#  the firewall -- the wizard's preview step does the writing, only for ticked
+#  apps, through the same idempotent Add-*ToWhitelist helpers.
+# =====================================================================
+
+$script:OnboardProfileOrder = @('Games','Browsers','Dev','Design','AI','Work')
+
+$script:OnboardCatalog = @{
+    'Games' = @{
+        ExeNames = @('steam.exe','EpicGamesLauncher.exe','Battle.net.exe','Agent.exe','LeagueClient.exe','RiotClientServices.exe','VALORANT-Win64-Shipping.exe','vgc.exe','GalaxyClient.exe','Origin.exe','EADesktop.exe','UbisoftConnect.exe')
+        Paths = @(
+            'C:\Riot Games\League of Legends\LeagueClient.exe',
+            '%LOCALAPPDATA%\Riot Games\Riot Client\RiotClientServices.exe',
+            'C:\Riot Games\Riot Client\RiotClientServices.exe',
+            'C:\Program Files\Riot Vanguard\vgc.exe',
+            '%ProgramFiles(x86)%\Steam\steam.exe',
+            '%ProgramFiles(x86)%\Epic Games\Launcher\Portal\Binaries\Win32\EpicGamesLauncher.exe',
+            '%ProgramFiles(x86)%\Battle.net\Battle.net.exe',
+            '%ProgramFiles(x86)%\GOG Galaxy\GalaxyClient.exe',
+            '%ProgramFiles%\Electronic Arts\EA Desktop\EA Desktop\EADesktop.exe',
+            '%ProgramFiles(x86)%\Ubisoft\Ubisoft Game Launcher\UbisoftConnect.exe'
+        )
+        Packages = @('Microsoft.GamingApp','Microsoft.XboxGamingOverlay','Microsoft.GamingServices')
+        Services = @('GamingServices')
+        DisplayNameRegex = @('Steam','Epic Games','Battle\.net','Riot','GOG Galaxy','Ubisoft','EA app|EA Desktop|Origin')
+        Riot = $true
+    }
+    'Browsers' = @{
+        ExeNames = @('chrome.exe','msedge.exe','firefox.exe','brave.exe','opera.exe','opera_gx.exe','vivaldi.exe')
+        Paths = @(
+            '%ProgramFiles%\Google\Chrome\Application\chrome.exe',
+            '%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe',
+            '%ProgramFiles(x86)%\Microsoft\Edge\Application\msedge.exe',
+            '%ProgramFiles%\Mozilla Firefox\firefox.exe',
+            '%LOCALAPPDATA%\BraveSoftware\Brave-Browser\Application\brave.exe',
+            '%ProgramFiles%\Vivaldi\Application\vivaldi.exe'
+        )
+        DisplayNameRegex = @('Google Chrome','Microsoft Edge','Mozilla Firefox','Brave','Opera','Vivaldi')
+    }
+    'Dev' = @{
+        ExeNames = @('Code.exe','devenv.exe','idea64.exe','pycharm64.exe','rider64.exe','webstorm64.exe','clion64.exe','git.exe','node.exe','pwsh.exe','Docker Desktop.exe','sublime_text.exe')
+        Paths = @(
+            '%LOCALAPPDATA%\Programs\Microsoft VS Code\Code.exe',
+            '%ProgramFiles%\Microsoft VS Code\Code.exe',
+            '%ProgramFiles%\Git\cmd\git.exe',
+            '%ProgramFiles%\Git\bin\git.exe',
+            '%ProgramFiles%\nodejs\node.exe',
+            '%ProgramFiles%\Docker\Docker\Docker Desktop.exe',
+            '%ProgramFiles%\PowerShell\7\pwsh.exe',
+            '%ProgramFiles%\Sublime Text\sublime_text.exe'
+        )
+        Packages = @('Microsoft.WindowsTerminal')
+        DisplayNameRegex = @('Visual Studio','IntelliJ','PyCharm','JetBrains Rider','WebStorm','CLion','Sublime Text','Docker Desktop','Node\.js','Git')
+    }
+    'Design' = @{
+        ExeNames = @('Photoshop.exe','Illustrator.exe','AfterFX.exe','Figma.exe','Blender.exe','krita.exe','Affinity Photo.exe','Affinity Designer.exe','resolve.exe')
+        Paths = @(
+            '%LOCALAPPDATA%\Figma\Figma.exe',
+            '%ProgramFiles%\Blender Foundation\*\blender.exe',
+            '%ProgramFiles%\Krita*\bin\krita.exe',
+            '%ProgramFiles%\Blackmagic Design\DaVinci Resolve\Resolve.exe'
+        )
+        DisplayNameRegex = @('Photoshop','Illustrator','After Effects','Adobe','Figma','Blender','Krita','Affinity','DaVinci Resolve')
+    }
+    'AI' = @{
+        ExeNames = @('Claude.exe','ChatGPT.exe','ollama app.exe','ollama.exe','LM Studio.exe','jan.exe','Cursor.exe')
+        Paths = @(
+            '%LOCALAPPDATA%\AnthropicClaude\claude.exe',
+            '%LOCALAPPDATA%\Programs\cursor\Cursor.exe',
+            '%LOCALAPPDATA%\Programs\Ollama\ollama app.exe',
+            '%LOCALAPPDATA%\Programs\lm-studio\LM Studio.exe',
+            '%LOCALAPPDATA%\Programs\Jan\jan.exe'
+        )
+        DisplayNameRegex = @('Claude','ChatGPT','Ollama','LM Studio','Jan','Cursor')
+        DefaultBrowser = $true
+    }
+    'Work' = @{
+        ExeNames = @('WINWORD.EXE','EXCEL.EXE','OUTLOOK.EXE','POWERPNT.EXE','Teams.exe','Slack.exe','Discord.exe','Zoom.exe')
+        Paths = @(
+            '%LOCALAPPDATA%\Microsoft\Teams\current\Teams.exe',
+            '%LOCALAPPDATA%\slack\slack.exe',
+            '%APPDATA%\Zoom\bin\Zoom.exe'
+        )
+        Packages = @('MSTeams')
+        DisplayNameRegex = @('Microsoft Office','Microsoft 365','Microsoft Teams','Slack','Discord','Zoom')
+    }
+}
+
+function Find-ExePath([string]$exeName) {
+    # Resolve an exe basename to a full path without a broad disk scan:
+    # the App Paths registry first (authoritative for launchers/browsers/Office),
+    # then a running process with that image name.
+    $bases = @(
+        'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\',
+        'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\App Paths\',
+        'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\'
+    )
+    foreach ($b in $bases) {
+        $k = $b + $exeName
+        if (Test-Path $k) {
+            try {
+                $def = (Get-ItemProperty $k -ErrorAction SilentlyContinue).'(default)'
+                if ($def) { $def = "$def".Trim('"'); if ($def -and (Test-Path $def)) { return (Resolve-Path $def).Path } }
+            } catch {}
+        }
+    }
+    try {
+        $pn = [System.IO.Path]::GetFileNameWithoutExtension($exeName)
+        $proc = Get-Process -Name $pn -ErrorAction SilentlyContinue | Where-Object { $_.Path } | Select-Object -First 1
+        if ($proc -and $proc.Path -and (Test-Path $proc.Path)) { return $proc.Path }
+    } catch {}
+    return $null
+}
+
+function Get-ExeFriendlyName([string]$exeName, [string]$path) {
+    # Prefer the file's own description; fall back to the base name.
+    try {
+        if ($path -and (Test-Path $path)) {
+            $vi = (Get-Item $path -ErrorAction SilentlyContinue).VersionInfo
+            if ($vi) {
+                if ($vi.FileDescription -and $vi.FileDescription.Trim()) { return $vi.FileDescription.Trim() }
+                if ($vi.ProductName -and $vi.ProductName.Trim()) { return $vi.ProductName.Trim() }
+            }
+        }
+    } catch {}
+    return [System.IO.Path]::GetFileNameWithoutExtension($exeName)
+}
+
+function Get-DefaultBrowserPath {
+    # Resolve the user's default https handler to an .exe (for the AI profile,
+    # which keeps the browser online alongside the AI apps).
+    try {
+        $uc = 'HKCU:\SOFTWARE\Microsoft\Windows\Shell\Associations\UrlAssociations\https\UserChoice'
+        $progId = (Get-ItemProperty $uc -ErrorAction SilentlyContinue).ProgId
+        if ($progId) {
+            $cmdKey = "HKLM:\SOFTWARE\Classes\$progId\shell\open\command"
+            if (-not (Test-Path $cmdKey)) { $cmdKey = "HKCU:\SOFTWARE\Classes\$progId\shell\open\command" }
+            if (Test-Path $cmdKey) {
+                $cmd = (Get-ItemProperty $cmdKey -ErrorAction SilentlyContinue).'(default)'
+                if ($cmd) {
+                    $m = [regex]::Match("$cmd", '"([^"]+\.exe)"')
+                    if (-not $m.Success) { $m = [regex]::Match("$cmd", '([A-Za-z]:\\[^\s"]+\.exe)') }
+                    if ($m.Success) {
+                        $p = $m.Groups[1].Value
+                        if (Test-Path $p) { return (Resolve-Path $p).Path }
+                    }
+                }
+            }
+        }
+    } catch {}
+    return $null
+}
+
+function Expand-CatalogPaths([string]$path) {
+    # Expand %ENV% and, for wildcard entries, every filesystem match.
+    $expanded = [Environment]::ExpandEnvironmentVariables($path)
+    if ($expanded -match '[\*\?]') {
+        try { return @(Resolve-Path $expanded -ErrorAction SilentlyContinue | ForEach-Object { $_.Path }) } catch { return @() }
+    }
+    if (Test-Path $expanded) { return @((Resolve-Path $expanded).Path) }
+    return @()
+}
+
+function Resolve-ProfileApps([string[]]$selected) {
+    # Read-only detection across the chosen profiles. Returns view-model objects
+    # carrying everything Add-*ToWhitelist needs (Type + Path/Package/Service),
+    # de-duplicated by target, each pre-ticked (Enabled) for the preview step.
+    $result = New-Object System.Collections.Generic.List[object]
+    $seen   = @{}
+    $installed = $null
+
+    $add = {
+        param([string]$name, [string]$type, [string]$target, [string]$profile)
+        if (-not $target) { return }
+        $key = $type.ToLowerInvariant() + '|' + $target.ToLowerInvariant()
+        if ($seen.ContainsKey($key)) { return }
+        # also collapse same app reached via different exes (e.g. steam.exe vs gameoverlayui.exe,
+        # or a versioned msedge.exe subfolder): dedup by friendly name too, keeping the first
+        # (earlier detection layers = curated ExeNames/Paths, so the better target wins).
+        $nameKey = $type.ToLowerInvariant() + '#' + $name.ToLowerInvariant()
+        if ($seen.ContainsKey($nameKey)) { return }
+        $seen[$key] = $true
+        $seen[$nameKey] = $true
+        $o = [pscustomobject]@{
+            Name    = $name
+            Type    = $type
+            Path    = ''
+            Package = ''
+            Service = ''
+            Profile = $profile
+            Enabled = $true
+        }
+        switch ($type) {
+            'Package' { $o.Package = $target }
+            'Service' { $o.Service = $target }
+            default   { $o.Path = $target }
+        }
+        $result.Add($o)
+    }
+
+    foreach ($pk in @($selected)) {
+        $prof = $script:OnboardCatalog[$pk]
+        if (-not $prof) { continue }
+
+        if ($prof.Paths) {
+            foreach ($path in $prof.Paths) {
+                foreach ($full in (Expand-CatalogPaths $path)) {
+                    & $add (Get-ExeFriendlyName ([System.IO.Path]::GetFileName($full)) $full) 'Exe' $full $pk
+                }
+            }
+        }
+
+        if ($prof.ExeNames) {
+            foreach ($exe in $prof.ExeNames) {
+                $p = Find-ExePath $exe
+                if ($p) { & $add (Get-ExeFriendlyName $exe $p) 'Exe' $p $pk }
+            }
+        }
+
+        if ($prof.Packages) {
+            foreach ($pkg in $prof.Packages) {
+                try {
+                    Get-AppxPackage -Name $pkg -ErrorAction SilentlyContinue | ForEach-Object {
+                        & $add ("$($_.Name)") 'Package' "$($_.PackageFamilyName)" $pk
+                    }
+                } catch {}
+            }
+        }
+
+        if ($prof.Services) {
+            foreach ($svc in $prof.Services) {
+                try {
+                    $s = Get-Service -Name $svc -ErrorAction SilentlyContinue
+                    if ($s) { & $add ("$($s.DisplayName)") 'Service' "$($s.Name)" $pk }
+                } catch {}
+            }
+        }
+
+        if ($prof.DisplayNameRegex) {
+            if ($null -eq $installed) { $installed = @(Get-InstalledPrograms) }
+            foreach ($rx in $prof.DisplayNameRegex) {
+                foreach ($prog in @($installed | Where-Object { $_.Name -match $rx })) {
+                    $exes = @(Find-Exes $prog.Location $prog.Icon)
+                    # Prefer the first non-junk exe (uninstallers/crash handlers/updaters
+                    # slip into the icon slot); fall back to the first if all look junky.
+                    $pick = $exes | Where-Object { [System.IO.Path]::GetFileName($_) -notmatch '(?i)^unins|setup|update|crash|report|helper|log-uploader' } | Select-Object -First 1
+                    if (-not $pick -and $exes.Count -gt 0) { $pick = $exes[0] }
+                    if ($pick) { & $add ("$($prog.Name)") 'Exe' $pick $pk }
+                }
+            }
+        }
+
+        if ($prof.Riot) {
+            foreach ($rp in (Get-RiotInstallPaths)) {
+                if (Test-Path $rp) { & $add ('Riot - ' + (Split-Path $rp -Leaf)) 'Exe' ((Resolve-Path $rp).Path) $pk }
+            }
+        }
+
+        if ($prof.DefaultBrowser) {
+            $db = Get-DefaultBrowserPath
+            if ($db) { & $add (Get-ExeFriendlyName ([System.IO.Path]::GetFileName($db)) $db) 'Exe' $db $pk }
+        }
+    }
+
+    return $result.ToArray()
+}
+
+# =====================================================================
 #  RE-APLICAR REGLAS (accion compartida; antes vivia dentro de Offer-Reapply)
 # =====================================================================
 
@@ -942,38 +1350,119 @@ function Enable-VtProcessing {
     }
 }
 
-function Initialize-Style {
-    # Palette (SGR codes) tuned for a DARK background: bright/high-contrast
-    # colors (90-97 fg, 100-107 bg) that pop on black. Empty strings + plain
-    # ASCII when VT is off: a conhost that rejects VT is also the one most
-    # likely to garble Unicode box glyphs, so both degrade together.
-    $e = [char]27
-    if ($script:Vt) {
-        $script:P = @{
+function Test-TrueColor {
+    # 24-bit color is available under Windows Terminal or a terminal that
+    # advertises truecolor. Only meaningful when VT sequences are already on.
+    if (-not $script:Vt) { return $false }
+    if ($env:COLORTERM -eq 'truecolor' -or $env:COLORTERM -eq '24bit') { return $true }
+    if ($env:WT_SESSION) { return $true }
+    return $false
+}
+
+function Get-SixteenColorPalette([string]$theme, [char]$e) {
+    # 16-color VT set, now theme-aware so switching is visible even on a console
+    # without truecolor (conhost): Neon uses the bright set (9x fg / 10x bg),
+    # Sobrio uses the standard/muted set (3x fg / 4x bg). Same keys in both.
+    if ($theme -eq 'Sobrio') {
+        return @{
             Reset  = "$e[0m";  Bold  = "$e[1m";  Dim   = "$e[90m"
-            Cyan   = "$e[96m"; Green = "$e[92m"; Yellow= "$e[93m"
-            Red    = "$e[91m"; White = "$e[97m"; Inv   = "$e[7m"
-            Border = "$e[94m"                       # bright blue frame lines
-            SelItem  = "$e[1;106;30m"               # focused list row: bright cyan bg
-            SelDimBg = "$e[100;97m"                 # selected row when zone unfocused
-            BtnFocus = "$e[1;107;30m"               # focused action button: white bg
-            BtnDim   = "$e[90m"                     # unfocused action buttons
-            TagExe = "$e[96m"; TagUwp = "$e[95m"; TagSvc = "$e[93m"
-            On     = "$e[92m"                       # [x] enabled mark
-            SelDanger= "$e[1;101;30m"               # selected 'Quitar' row: red bg
-            BgGreen  = "$e[1;102;30m"               # ACTIVE badge
-            BgGray   = "$e[100;97m"                 # INACTIVE badge
-            BgYellow = "$e[1;103;30m"               # INCONSISTENT badge
+            Cyan   = "$e[36m"; Green = "$e[32m"; Yellow= "$e[33m"
+            Red    = "$e[31m"; White = "$e[37m"; Inv   = "$e[7m"
+            Border = "$e[34m"
+            SelItem  = "$e[46;30m"
+            SelDimBg = "$e[100;37m"
+            BtnFocus = "$e[47;30m"
+            BtnDim   = "$e[90m"
+            TagExe = "$e[36m"; TagUwp = "$e[35m"; TagSvc = "$e[33m"
+            On     = "$e[32m"
+            SelDanger= "$e[41;37m"
+            BgGreen  = "$e[42;30m"
+            BgGray   = "$e[100;37m"
+            BgYellow = "$e[43;30m"
         }
-        $script:B = @{
-            TL=[string][char]0x250C; TR=[string][char]0x2510; BL=[string][char]0x2514; BR=[string][char]0x2518
-            H =[string][char]0x2500; V =[string][char]0x2502; LT=[string][char]0x251C; RT=[string][char]0x2524
-        }
-        $script:ArrowUp = [string][char]0x2191
-        $script:ArrowDn = [string][char]0x2193
-        $script:ArrowLt = [string][char]0x2190
-        $script:ArrowRt = [string][char]0x2192
+    }
+    @{
+        Reset  = "$e[0m";  Bold  = "$e[1m";  Dim   = "$e[90m"
+        Cyan   = "$e[96m"; Green = "$e[92m"; Yellow= "$e[93m"
+        Red    = "$e[91m"; White = "$e[97m"; Inv   = "$e[7m"
+        Border = "$e[94m"
+        SelItem  = "$e[1;106;30m"
+        SelDimBg = "$e[100;97m"
+        BtnFocus = "$e[1;107;30m"
+        BtnDim   = "$e[90m"
+        TagExe = "$e[96m"; TagUwp = "$e[95m"; TagSvc = "$e[93m"
+        On     = "$e[92m"
+        SelDanger= "$e[1;101;30m"
+        BgGreen  = "$e[1;102;30m"
+        BgGray   = "$e[100;97m"
+        BgYellow = "$e[1;103;30m"
+    }
+}
+
+function Get-TrueColorPalette([string]$theme, [char]$e) {
+    # 24-bit palette. fg/bg builders emit SGR from RGB; selection/badge keys
+    # combine a bg with a contrasting bold fg so text stays legible on the bar.
+    $fg  = { param($r,$g,$b) $e + '[38;2;' + $r + ';' + $g + ';' + $b + 'm' }
+    $bg  = { param($r,$g,$b) $e + '[48;2;' + $r + ';' + $g + ';' + $b + 'm' }
+    $bfg = { param($r,$g,$b) $e + '[1;38;2;' + $r + ';' + $g + ';' + $b + 'm' }
+
+    if ($theme -eq 'Sobrio') {
+        $cyan=@(125,175,190); $green=@(120,170,130); $amber=@(200,170,110)
+        $red=@(200,130,130);  $white=@(220,223,228); $dim=@(130,135,145)
+        $border=@(110,120,150)
+        $selBg=@(70,80,110);   $selFg=@(240,242,248)
+        $btnBg=@(210,213,220); $btnFg=@(20,22,28)
+        $uwp=@(180,150,200)
+        $okBg=@(70,120,90);    $okFg=@(235,245,238)
+        $warnBg=@(150,120,60); $warnFg=@(25,20,10)
+        $dangBg=@(150,70,70);  $dangFg=@(245,235,235)
+        $grayBg=@(80,85,95);   $grayFg=@(225,228,233)
     } else {
+        $cyan=@(34,211,238);   $green=@(52,211,153);  $amber=@(251,191,36)
+        $red=@(248,113,113);   $white=@(244,246,250); $dim=@(120,125,140)
+        $border=@(99,102,241)
+        $selBg=@(34,211,238);  $selFg=@(10,12,20)
+        $btnBg=@(244,246,250); $btnFg=@(10,12,20)
+        $uwp=@(196,132,252)
+        $okBg=@(52,211,153);   $okFg=@(6,20,14)
+        $warnBg=@(251,191,36); $warnFg=@(30,22,4)
+        $dangBg=@(248,113,113);$dangFg=@(30,8,8)
+        $grayBg=@(75,85,99);   $grayFg=@(226,232,240)
+    }
+
+    @{
+        Reset  = "$e[0m"; Bold = "$e[1m"; Inv = "$e[7m"
+        Dim    = (& $fg  $dim[0]   $dim[1]   $dim[2])
+        Cyan   = (& $fg  $cyan[0]  $cyan[1]  $cyan[2])
+        Green  = (& $fg  $green[0] $green[1] $green[2])
+        Yellow = (& $fg  $amber[0] $amber[1] $amber[2])
+        Red    = (& $fg  $red[0]   $red[1]   $red[2])
+        White  = (& $fg  $white[0] $white[1] $white[2])
+        Border = (& $fg  $border[0] $border[1] $border[2])
+        SelItem  = (& $bg $selBg[0] $selBg[1] $selBg[2]) + (& $bfg $selFg[0] $selFg[1] $selFg[2])
+        SelDimBg = (& $bg $grayBg[0] $grayBg[1] $grayBg[2]) + (& $fg $grayFg[0] $grayFg[1] $grayFg[2])
+        BtnFocus = (& $bg $btnBg[0] $btnBg[1] $btnBg[2]) + (& $bfg $btnFg[0] $btnFg[1] $btnFg[2])
+        BtnDim   = (& $fg $dim[0] $dim[1] $dim[2])
+        TagExe = (& $fg $cyan[0] $cyan[1] $cyan[2])
+        TagUwp = (& $fg $uwp[0]  $uwp[1]  $uwp[2])
+        TagSvc = (& $fg $amber[0] $amber[1] $amber[2])
+        On     = (& $fg $green[0] $green[1] $green[2])
+        SelDanger= (& $bg $dangBg[0] $dangBg[1] $dangBg[2]) + (& $bfg $dangFg[0] $dangFg[1] $dangFg[2])
+        BgGreen  = (& $bg $okBg[0] $okBg[1] $okBg[2]) + (& $bfg $okFg[0] $okFg[1] $okFg[2])
+        BgGray   = (& $bg $grayBg[0] $grayBg[1] $grayBg[2]) + (& $fg $grayFg[0] $grayFg[1] $grayFg[2])
+        BgYellow = (& $bg $warnBg[0] $warnBg[1] $warnBg[2]) + (& $bfg $warnFg[0] $warnFg[1] $warnFg[2])
+    }
+}
+
+function Initialize-Style {
+    # Three render tiers: 24-bit truecolor, the 16-color VT set, or a no-color
+    # ASCII fallback (a conhost that rejects VT also garbles Unicode box glyphs,
+    # so color and box style degrade together). Theme (Neon/Sobrio) picks the
+    # palette. Color codes always wrap AROUND text and never count toward the
+    # visible width, so Render-Segments/Fit column math is unaffected.
+    $e = [char]27
+
+    if (-not $script:Vt) {
         $script:P = @{
             Reset=''; Bold=''; Dim=''; Cyan=''; Green=''; Yellow=''; Red=''; White=''; Inv=''
             Border=''; SelItem=''; SelDimBg=''; BtnFocus=''; BtnDim=''
@@ -981,11 +1470,24 @@ function Initialize-Style {
             BgGreen=''; BgGray=''; BgYellow=''
         }
         $script:B = @{ TL='+'; TR='+'; BL='+'; BR='+'; H='-'; V='|'; LT='+'; RT='+' }
-        $script:ArrowUp = '^'
-        $script:ArrowDn = 'v'
-        $script:ArrowLt = '<'
-        $script:ArrowRt = '>'
+        $script:ArrowUp = '^'; $script:ArrowDn = 'v'; $script:ArrowLt = '<'; $script:ArrowRt = '>'
+        return
     }
+
+    $theme = $script:Theme
+    if ($theme -ne 'Neon' -and $theme -ne 'Sobrio') { $theme = 'Neon' }
+
+    if (Test-TrueColor) { $script:P = Get-TrueColorPalette $theme $e }
+    else                { $script:P = Get-SixteenColorPalette $theme $e }
+
+    $script:B = @{
+        TL=[string][char]0x250C; TR=[string][char]0x2510; BL=[string][char]0x2514; BR=[string][char]0x2518
+        H =[string][char]0x2500; V =[string][char]0x2502; LT=[string][char]0x251C; RT=[string][char]0x2524
+    }
+    $script:ArrowUp = [string][char]0x2191
+    $script:ArrowDn = [string][char]0x2193
+    $script:ArrowLt = [string][char]0x2190
+    $script:ArrowRt = [string][char]0x2192
 }
 
 function Render-Segments($segs, [int]$w) {
@@ -1415,6 +1917,141 @@ function Build-InstalledFrame($ctx, [int]$W, [int]$H) {
     return $lines
 }
 
+function Build-WizardRow([bool]$sel, [string]$cursor, [string]$mark, [string]$markColor, [string]$text, [string]$textColor, [int]$w) {
+    # One list row rendered to EXACTLY w visible chars. Selected rows draw a
+    # solid highlight bar; others color the mark and text separately.
+    $p = $script:P
+    if ($sel) {
+        return $p.SelItem + (Fit ($cursor + $mark + $text) $w) + $p.Reset
+    }
+    $segs = @(
+        @{ Text = $cursor; Color = '' },
+        @{ Text = $mark;   Color = $markColor },
+        @{ Text = $text;   Color = $textColor }
+    )
+    return (Render-Segments $segs $w)
+}
+
+function Build-WizardFrame($ctx, [int]$W, [int]$H) {
+    # Onboarding wizard. Steps 0..5: language, welcome, theme, profiles
+    # (multi-select), preview (per-app checkboxes + save), summary. Same
+    # full-width line model as the other frames so the shared overlays and
+    # RenderTest apply unchanged.
+    $p  = $script:P
+    $uw = $W - 1
+    $totalRows = $H - 1
+    if ($W -lt $script:MinW -or $H -lt $script:MinH) { return (Build-TinyFrame $W $H) }
+    $wz = $ctx.Wizard
+    $lines = New-Object System.Collections.Generic.List[string]
+    $panelRows = $totalRows - 3
+    $step = [int]$wz.Step
+    $w2 = $uw - 2
+
+    $hdr = L 'wizard.header' ($step + 1) 6
+    $lines.Add(($p.Bold + $p.Cyan + (Fit ((L 'wizard.title') + '   ' + $hdr) $uw) + $p.Reset))
+
+    $inner = New-Object System.Collections.Generic.List[string]
+    $boxTitle = ''
+
+    switch ($step) {
+        0 {
+            $boxTitle = L 'wizard.step.language'
+            $langs = @('en','es')
+            for ($i = 0; $i -lt $langs.Count; $i++) {
+                $lc = $langs[$i]
+                $cur = '  '; if ($i -eq $wz.LangSel) { $cur = '> ' }
+                $isCur = ($script:Lang -eq $lc)
+                $mark = '[ ] '; if ($isCur) { $mark = '[*] ' }
+                $mc = $p.Dim; if ($isCur) { $mc = $p.Green }
+                $inner.Add((Build-WizardRow ($i -eq $wz.LangSel) $cur $mark $mc (L ('wizard.lang.' + $lc)) '' $w2))
+            }
+        }
+        1 {
+            $boxTitle = L 'wizard.step.welcome'
+            foreach ($k in @('wizard.welcome1','wizard.welcome2','wizard.welcome3','wizard.welcome4')) {
+                $inner.Add((Fit ('  ' + (L $k)) $w2))
+            }
+        }
+        2 {
+            $boxTitle = L 'wizard.step.theme'
+            $themes = @('Neon','Sobrio')
+            for ($i = 0; $i -lt $themes.Count; $i++) {
+                $tk = $themes[$i]
+                $cur = '  '; if ($i -eq $wz.ThemeSel) { $cur = '> ' }
+                $isCur = ($script:Theme -eq $tk)
+                $mark = '[ ] '; if ($isCur) { $mark = '[*] ' }
+                $mc = $p.Dim; if ($isCur) { $mc = $p.Green }
+                $txt = (L ('theme.' + $tk.ToLowerInvariant())) + ' - ' + (L ('wizard.theme.' + $tk.ToLowerInvariant()))
+                $inner.Add((Build-WizardRow ($i -eq $wz.ThemeSel) $cur $mark $mc $txt '' $w2))
+            }
+        }
+        3 {
+            $boxTitle = L 'wizard.step.profiles'
+            for ($i = 0; $i -lt $script:OnboardProfileOrder.Count; $i++) {
+                $pk = $script:OnboardProfileOrder[$i]
+                $cur = '  '; if ($i -eq $wz.ProfSel) { $cur = '> ' }
+                $on = [bool]$wz.Profiles[$pk]
+                $mark = '[ ] '; if ($on) { $mark = '[x] ' }
+                $mc = $p.Dim; if ($on) { $mc = $p.On }
+                $txt = (L ('profile.' + $pk.ToLowerInvariant())) + ' - ' + (L ('profile.' + $pk.ToLowerInvariant() + '.desc'))
+                $inner.Add((Build-WizardRow ($i -eq $wz.ProfSel) $cur $mark $mc $txt '' $w2))
+            }
+        }
+        4 {
+            $apps = @($wz.Apps)
+            $onCount = @($apps | Where-Object { $_.Enabled }).Count
+            $boxTitle = (L 'wizard.step.preview') + ' (' + $onCount + '/' + $apps.Count + ')'
+            if ($apps.Count -eq 0) {
+                $inner.Add((Build-WizardRow $false '  ' '' $p.Dim (L 'wizard.noapps') $p.Dim $w2))
+            } else {
+                for ($i = 0; $i -lt $apps.Count; $i++) {
+                    $ap = $apps[$i]
+                    $cur = '  '; if ($i -eq $wz.AppSel) { $cur = '> ' }
+                    $mark = '[ ] '; if ($ap.Enabled) { $mark = '[x] ' }
+                    $mc = $p.Dim; if ($ap.Enabled) { $mc = $p.On }
+                    $tag = 'exe'
+                    if ($ap.Type -eq 'Package') { $tag = 'uwp' } elseif ($ap.Type -eq 'Service') { $tag = 'svc' }
+                    $inner.Add((Build-WizardRow ($i -eq $wz.AppSel) $cur $mark $mc ($tag + ' ' + $ap.Name) '' $w2))
+                }
+            }
+        }
+        default {
+            $boxTitle = L 'wizard.step.summary'
+            $inner.Add((Fit ('  ' + (L 'wizard.summary' $wz.Added)) $w2))
+            $inner.Add((Fit '' $w2))
+            $inner.Add((Fit ('  ' + (L 'wizard.finishhint')) $w2))
+        }
+    }
+
+    $visible = $panelRows - 2
+    if ($visible -lt 1) { $visible = 1 }
+    $scroll = 0
+    if ($step -eq 4) {
+        $sel = [int]$wz.AppSel
+        if ($sel -lt $wz.AppScroll) { $wz.AppScroll = $sel }
+        if ($sel -ge ($wz.AppScroll + $visible)) { $wz.AppScroll = $sel - $visible + 1 }
+        if ($wz.AppScroll -lt 0) { $wz.AppScroll = 0 }
+        $scroll = $wz.AppScroll
+        if ($scroll -gt 0) { $boxTitle += ' ' + $script:ArrowUp }
+        if (($scroll + $visible) -lt $inner.Count) { $boxTitle += ' ' + $script:ArrowDn }
+    }
+
+    for ($r = 0; $r -lt $panelRows; $r++) {
+        if ($r -eq 0) { $lines.Add(($p.Border + (New-BoxTop $boxTitle $uw) + $p.Reset)) }
+        elseif ($r -eq ($panelRows - 1)) { $lines.Add(($p.Border + (New-BoxBottom $uw) + $p.Reset)) }
+        else {
+            $li = ($r - 1) + $scroll
+            $content = Fit '' $w2
+            if ($li -lt $inner.Count) { $content = $inner[$li] }
+            $lines.Add((New-BoxRow $content $uw ''))
+        }
+    }
+
+    $lines.Add(($p.Yellow + (Fit (' ' + $ctx.Msg) $uw) + $p.Reset))
+    $lines.Add(($p.Inv + (Fit (L ('wizard.keys.' + $step)) $uw) + $p.Reset))
+    return $lines
+}
+
 function Add-ModalOverlay($lines, $modal, [int]$uw, [int]$totalRows) {
     # Draw a centered s/n box over already-built frame lines. Whole lines get
     # replaced (padded to full width), so the underlying row is fully erased.
@@ -1453,6 +2090,7 @@ function Add-MenuOverlay($lines, $menu, [int]$uw, [int]$totalRows) {
     $b = $script:B
     $items = @($menu.Items)
     $title = L 'menu.title'
+    if ($menu.Title) { $title = $menu.Title }
     $mw = $title.Length + 2
     foreach ($it in $items) { $l = $it.Label.Length + 4; if ($l -gt $mw) { $mw = $l } }
     $mw += 2
@@ -1535,11 +2173,12 @@ function New-TuiContext {
             @{ Id = 'deactivate' },
             @{ Id = 'seed' },
             @{ Id = 'installed' },
-            @{ Id = 'repair' },
+            @{ Id = 'more' },
             @{ Id = 'lang' },
             @{ Id = 'quit' }
         )
-        Menu       = $null           # context menu popup: @{ Items; Sel }
+        Wizard     = $null           # onboarding wizard sub-state (see Start-Wizard)
+        Menu       = $null           # context menu popup: @{ Items; Sel; Title }
         Msg        = (L 'msg.hello')
         Modal      = $null
         Running    = $true
@@ -1695,7 +2334,23 @@ function Invoke-OpenInstalled($ctx) {
 
 function Toggle-Language($ctx) {
     if ($script:Lang -eq 'es') { $script:Lang = 'en' } else { $script:Lang = 'es' }
+    $script:Config.lang = $script:Lang
+    try { Save-Config $script:Config } catch {}
     $ctx.Msg = L 'msg.langchanged'
+}
+
+function Set-Theme($ctx, [string]$theme) {
+    # Switch palette immediately (re-run Initialize-Style) and persist the choice.
+    if ($theme -ne 'Neon' -and $theme -ne 'Sobrio') { return }
+    $script:Theme = $theme
+    $script:Config.theme = $theme
+    try { Save-Config $script:Config } catch {}
+    Initialize-Style
+    if ($ctx) { $ctx.Msg = L 'msg.themechanged' (L ('theme.' + $theme.ToLowerInvariant())) }
+}
+
+function Toggle-Theme($ctx) {
+    if ($script:Theme -eq 'Neon') { Set-Theme $ctx 'Sobrio' } else { Set-Theme $ctx 'Neon' }
 }
 
 function Invoke-QuitRequest($ctx) {
@@ -1716,13 +2371,191 @@ function Invoke-QuitRequest($ctx) {
     }
 }
 
+function Start-Wizard($ctx) {
+    # Prepare wizard state. Pre-tick profiles from a prior run, else default to
+    # Games (this is a gaming firewall). Never touches the firewall.
+    $profs = @{}
+    foreach ($k in $script:OnboardProfileOrder) { $profs[$k] = $false }
+    $saved = @($script:Config.profiles)
+    if ($saved.Count -gt 0) {
+        foreach ($k in $saved) { if ($profs.ContainsKey("$k")) { $profs["$k"] = $true } }
+    } else {
+        $profs['Games'] = $true
+    }
+    $themeSel = 0; if ($script:Theme -eq 'Sobrio') { $themeSel = 1 }
+    $langSel = 0; if ($script:Lang -eq 'es') { $langSel = 1 }
+    $ctx.Wizard = @{
+        Step = 0; Profiles = $profs; ProfSel = 0; LangSel = $langSel
+        Apps = @(); AppSel = 0; AppScroll = 0; Added = 0; ThemeSel = $themeSel
+    }
+    $ctx.Menu  = $null
+    $ctx.View  = 'wizard'
+    $ctx.Msg   = L 'wizard.lang.hint'
+}
+
+function Complete-Wizard($ctx) {
+    # Persist choices and return to the main view. Marks onboarding done so the
+    # wizard does not reappear on the next launch.
+    $sel = @($script:OnboardProfileOrder | Where-Object { $ctx.Wizard.Profiles[$_] })
+    $script:Config.onboardedVersion = $OnboardVersion
+    $script:Config.lang     = $script:Lang
+    $script:Config.theme    = $script:Theme
+    $script:Config.profiles = $sel
+    try { Save-Config $script:Config } catch {}
+    $ctx.Wizard = $null
+    $ctx.View   = 'main'
+    Invoke-TuiRefresh $ctx (L 'wizard.done')
+}
+
+function Enter-WizardPreview($ctx) {
+    # Transition into the preview step: resolve apps for the ticked profiles.
+    # Paint an interim frame first (detection can take a moment).
+    $ctx.Msg = L 'wizard.detecting'
+    try { Write-TuiFrame (Build-WizardFrame $ctx ([Console]::WindowWidth) ([Console]::WindowHeight)) } catch {}
+    $sel = @($script:OnboardProfileOrder | Where-Object { $ctx.Wizard.Profiles[$_] })
+    $ctx.Wizard.Apps      = @(Resolve-ProfileApps $sel)
+    $ctx.Wizard.AppSel    = 0
+    $ctx.Wizard.AppScroll = 0
+    $ctx.Wizard.Step      = 4
+    $ctx.Msg = L 'wizard.previewhint'
+}
+
+function Save-WizardSelection($ctx) {
+    # Add only the ticked apps to the whitelist (Enabled), via the idempotent
+    # adders. Runs in line mode so their console output does not corrupt frames.
+    $ticked = @($ctx.Wizard.Apps | Where-Object { $_.Enabled })
+    Invoke-LineMode ({
+        foreach ($app in $ticked) {
+            switch ($app.Type) {
+                'Package' { Add-PackageToWhitelist $app.Name $app.Package }
+                'Service' { Add-ServiceToWhitelist $app.Name $app.Service }
+                default   { Add-ToWhitelist $app.Name $app.Path }
+            }
+        }
+        Write-Host ''
+        Write-Host (L 'wizard.saved' $ticked.Count) -ForegroundColor Green
+    }.GetNewClosure())
+    $ctx.Wizard.Added = $ticked.Count
+    $ctx.Wizard.Step  = 5
+    Invoke-TuiRefresh $ctx (L 'wizard.savedmsg' $ticked.Count)
+}
+
+function Request-ResetConfig($ctx) {
+    # Double confirmation: reset config, then optionally empty the whitelist,
+    # then relaunch the wizard. No firewall action.
+    Open-Modal $ctx @((L 'reset.confirm1'), (L 'reset.confirm2')) ({
+        Remove-Config
+        $script:Config = New-DefaultConfig
+        Open-Modal $ctx @((L 'reset.wl1'), (L 'reset.wl2')) ({
+            Save-Whitelist @()
+            Invoke-TuiRefresh $ctx (L 'reset.donewl')
+            Start-Wizard $ctx
+        }.GetNewClosure()) ({
+            Invoke-TuiRefresh $ctx (L 'reset.donecfg')
+            Start-Wizard $ctx
+        }.GetNewClosure())
+    }.GetNewClosure())
+}
+
+function Open-SystemMenu($ctx) {
+    # The 'More' popup: actions that do not fit the top button bar.
+    $mi = New-Object System.Collections.Generic.List[object]
+    $mi.Add(@{ Id = 'repair';   Label = (L 'menu.repair') })
+    $mi.Add(@{ Id = 'wizard';   Label = (L 'menu.wizard') })
+    $mi.Add(@{ Id = 'theme';    Label = (L 'menu.theme') })
+    $mi.Add(@{ Id = 'resetcfg'; Label = (L 'menu.reset') })
+    $ctx.Menu = @{ Items = $mi.ToArray(); Sel = 0; Title = (L 'menu.system.title') }
+}
+
+function Apply-WizardLang($ctx) {
+    # Apply the language picked at step 0 live so the rest of the wizard shows
+    # in it immediately. Texts use L (uncached), so the next frame re-labels.
+    $lc = @('en','es')[$ctx.Wizard.LangSel]
+    $script:Lang = $lc
+    $ctx.Msg = L 'wizard.lang.hint'
+}
+
+function Invoke-WizardKey($ctx, $k) {
+    $wz = $ctx.Wizard
+    $step = [int]$wz.Step
+    switch ($step) {
+        0 {
+            switch ($k.Key) {
+                'UpArrow'    { if ($wz.LangSel -gt 0) { $wz.LangSel-- }; Apply-WizardLang $ctx; return }
+                'DownArrow'  { if ($wz.LangSel -lt 1) { $wz.LangSel++ }; Apply-WizardLang $ctx; return }
+                'Spacebar'   { Apply-WizardLang $ctx; return }
+                'Enter'      { Apply-WizardLang $ctx; $wz.Step = 1; return }
+                'RightArrow' { Apply-WizardLang $ctx; $wz.Step = 1; return }
+                'Escape'     { Complete-Wizard $ctx; return }
+            }
+            if (("$($k.KeyChar)").ToLowerInvariant() -eq 'q') { Complete-Wizard $ctx }
+            return
+        }
+        1 {
+            if ($k.Key -eq 'Enter' -or $k.Key -eq 'RightArrow' -or $k.Key -eq 'Spacebar') { $wz.Step = 2; return }
+            if ($k.Key -eq 'LeftArrow' -or $k.Key -eq 'Escape') { $wz.Step = 0; return }
+            return
+        }
+        2 {
+            switch ($k.Key) {
+                'UpArrow'    { if ($wz.ThemeSel -gt 0) { $wz.ThemeSel-- }; Set-Theme $ctx (@('Neon','Sobrio')[$wz.ThemeSel]); return }
+                'DownArrow'  { if ($wz.ThemeSel -lt 1) { $wz.ThemeSel++ }; Set-Theme $ctx (@('Neon','Sobrio')[$wz.ThemeSel]); return }
+                'Spacebar'   { Set-Theme $ctx (@('Neon','Sobrio')[$wz.ThemeSel]); return }
+                'Enter'      { $wz.Step = 3; return }
+                'RightArrow' { $wz.Step = 3; return }
+                'LeftArrow'  { $wz.Step = 1; return }
+                'Escape'     { $wz.Step = 1; return }
+            }
+            return
+        }
+        3 {
+            $n = $script:OnboardProfileOrder.Count
+            switch ($k.Key) {
+                'UpArrow'    { if ($wz.ProfSel -gt 0) { $wz.ProfSel-- }; return }
+                'DownArrow'  { if ($wz.ProfSel -lt ($n - 1)) { $wz.ProfSel++ }; return }
+                'Home'       { $wz.ProfSel = 0; return }
+                'End'        { $wz.ProfSel = $n - 1; return }
+                'Spacebar'   { $pk = $script:OnboardProfileOrder[$wz.ProfSel]; $wz.Profiles[$pk] = -not $wz.Profiles[$pk]; return }
+                'Enter'      { Enter-WizardPreview $ctx; return }
+                'RightArrow' { Enter-WizardPreview $ctx; return }
+                'LeftArrow'  { $wz.Step = 2; return }
+                'Escape'     { $wz.Step = 2; return }
+            }
+            return
+        }
+        4 {
+            $n = @($wz.Apps).Count
+            switch ($k.Key) {
+                'UpArrow'    { if ($wz.AppSel -gt 0) { $wz.AppSel-- }; return }
+                'DownArrow'  { if ($wz.AppSel -lt ($n - 1)) { $wz.AppSel++ }; return }
+                'PageUp'     { $wz.AppSel = [Math]::Max(0, $wz.AppSel - 10); return }
+                'PageDown'   { if ($n -gt 0) { $wz.AppSel = [Math]::Min($n - 1, $wz.AppSel + 10) }; return }
+                'Home'       { $wz.AppSel = 0; return }
+                'End'        { if ($n -gt 0) { $wz.AppSel = $n - 1 }; return }
+                'Spacebar'   { if ($n -gt 0) { $wz.Apps[$wz.AppSel].Enabled = -not $wz.Apps[$wz.AppSel].Enabled }; return }
+                'Enter'      { Save-WizardSelection $ctx; return }
+                'LeftArrow'  { $wz.Step = 3; return }
+                'Escape'     { $wz.Step = 3; return }
+            }
+            if (("$($k.KeyChar)").ToLowerInvariant() -eq 'g') { Save-WizardSelection $ctx }
+            return
+        }
+        default {
+            if ($k.Key -eq 'Enter' -or $k.Key -eq 'Spacebar') { Complete-Wizard $ctx; return }
+            if ($k.Key -eq 'LeftArrow') { $wz.Step = 4; return }
+            if ($k.Key -eq 'Escape') { Complete-Wizard $ctx; return }
+            return
+        }
+    }
+}
+
 function Invoke-ActionButton($ctx) {
     switch ($ctx.Actions[$ctx.ActionSel].Id) {
         'activate'   { Invoke-ActivateRequest $ctx }
         'deactivate' { Invoke-DeactivateRequest $ctx }
         'seed'       { Invoke-SeedAction $ctx }
         'installed'  { Invoke-OpenInstalled $ctx }
-        'repair'     { Invoke-RepairRequest $ctx }
+        'more'       { Open-SystemMenu $ctx }
         'lang'       { Toggle-Language $ctx }
         'quit'       { Invoke-QuitRequest $ctx }
     }
@@ -1771,6 +2604,10 @@ function Invoke-MenuKey($ctx, $k) {
                         $ctx.Msg = L 'msg.detail' $it.Name $it.Target
                     }
                 }
+                'repair'   { Invoke-RepairRequest $ctx }
+                'wizard'   { Start-Wizard $ctx }
+                'theme'    { Toggle-Theme $ctx }
+                'resetcfg' { Request-ResetConfig $ctx }
             }
             return
         }
@@ -1880,7 +2717,8 @@ function Invoke-TuiLoop($ctx) {
         }
 
         $lines = $null
-        if ($ctx.View -eq 'installed') { $lines = Build-InstalledFrame $ctx $W $H }
+        if ($ctx.View -eq 'wizard') { $lines = Build-WizardFrame $ctx $W $H }
+        elseif ($ctx.View -eq 'installed') { $lines = Build-InstalledFrame $ctx $W $H }
         else { $lines = Build-MainFrame $ctx $W $H }
         if ($ctx.Menu)  { Add-MenuOverlay  $lines $ctx.Menu  ($W - 1) ($H - 1) }
         if ($ctx.Modal) { Add-ModalOverlay $lines $ctx.Modal ($W - 1) ($H - 1) }
@@ -1897,6 +2735,7 @@ function Invoke-TuiLoop($ctx) {
         $k = [Console]::ReadKey($true)
         if ($ctx.Modal) { Invoke-ModalKey $ctx $k }
         elseif ($ctx.Menu) { Invoke-MenuKey $ctx $k }
+        elseif ($ctx.View -eq 'wizard') { Invoke-WizardKey $ctx $k }
         elseif ($ctx.View -eq 'installed') { Invoke-InstalledKey $ctx $k }
         else { Invoke-MainKey $ctx $k }
 
@@ -1952,6 +2791,44 @@ if ($RenderTest) {
             }
         }
     }
+
+    # ---- wizard sweep: every step at every size, with mock apps in preview ---
+    $ctx.Wizard = @{
+        Step = 0; LangSel = 1; ProfSel = 1; AppSel = 1; AppScroll = 0; Added = 3; ThemeSel = 1
+        Profiles = @{}
+        Apps = @(
+            [pscustomobject]@{ Name = 'Mock App One'; Type = 'Exe'; Path = 'C:\Mock\one.exe'; Package = ''; Service = ''; Profile = 'Games'; Enabled = $true },
+            [pscustomobject]@{ Name = 'Mock App Two with a very long name to force truncation in the preview list'; Type = 'Package'; Path = ''; Package = 'Mock.Pkg_x'; Service = ''; Profile = 'Games'; Enabled = $false },
+            [pscustomobject]@{ Name = 'Mock Service'; Type = 'Service'; Path = ''; Package = ''; Service = 'MockSvc'; Profile = 'Work'; Enabled = $true }
+        )
+    }
+    foreach ($pk in $script:OnboardProfileOrder) { $ctx.Wizard.Profiles[$pk] = $false }
+    $ctx.Wizard.Profiles['Games'] = $true
+    $ctx.View = 'wizard'
+    foreach ($size in @(@(100,30), @(70,15), @(120,40))) {
+        for ($ws = 0; $ws -le 5; $ws++) {
+            $ctx.Wizard.Step = $ws
+            $ctx.Wizard.AppScroll = 0
+            $f = Build-WizardFrame $ctx $size[0] $size[1]
+            # per-step sentinel: the header always carries 'step N/6' in either language
+            $sent = ($ws + 1).ToString() + '/6'
+            if (($f -join "`n") -notmatch [regex]::Escape($sent)) {
+                Write-Output ('RENDERTEST-FAIL: wizard sentinel step' + $ws + ' at ' + $size[0] + 'x' + $size[1])
+                $ok = $false
+            }
+            # overlay both popups to exercise their width math on the wizard too
+            Add-MenuOverlay  $f $menu ($size[0] - 1) ($size[1] - 1)
+            Add-ModalOverlay $f @{ Lines = @('Reset config: yes/no?') } ($size[0] - 1) ($size[1] - 1)
+            foreach ($ln in $f) {
+                if ($ln.Length -gt ($size[0] - 1)) {
+                    Write-Output ('RENDERTEST-FAIL: overflow wizard/step' + $ws + ' at ' + $size[0] + 'x' + $size[1] + ' len=' + $ln.Length)
+                    $ok = $false
+                }
+            }
+        }
+    }
+    $ctx.Wizard = $null
+
     $ctx.View = 'main'
     $ctx.Zone = 'list'
     $tiny = ((Build-MainFrame $ctx 40 10) -join "`n")
@@ -2009,6 +2886,9 @@ try {
     } catch {}
     try { [Console]::CursorVisible = $false } catch {}
     Clear-Host
+    # First run (or a bumped onboarding version): open the wizard before the
+    # main view. This only reads apps and writes config/whitelist; never the firewall.
+    if (-not (Test-Onboarded $script:Config)) { Start-Wizard $tuiCtx }
     Invoke-TuiLoop $tuiCtx
 }
 catch {

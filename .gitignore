@@ -1,6 +1,7 @@
 # Per-machine data written at runtime (yours, not the tool's source)
 whitelist.json
 state.json
+config.json
 
 # Backups and logs
 *.bak
