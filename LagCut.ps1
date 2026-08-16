@@ -123,6 +123,9 @@ $script:Msg = @{
     'exe.searching'    = @{ en='  Looking for .exe of: {0} ...'; es='  Buscando .exe de: {0} ...' }
     'exe.none'         = @{ en="  No .exe found; use 'Add by path' in the allow list."; es="  No encontre ningun .exe; usa 'Agregar por ruta' en la lista de permitidos." }
     'exe.prompt'       = @{ en="  which .exe? (number, 'all', or Enter to cancel)"; es="  cual .exe? (numero, 'all', o Enter para cancelar)" }
+    'exe.xboxhint'     = @{ en="  Tip: for Xbox games the network exe is usually 'start_protected_game.exe'; 'gamelaunchhelper.exe' is only the launcher."; es="  Tip: en juegos Xbox el exe de red suele ser 'start_protected_game.exe'; 'gamelaunchhelper.exe' es solo el lanzador." }
+    'exe.acfound'      = @{ en='  This game uses {0} anti-cheat. Multiplayer needs it online too.'; es='  Este juego usa el anti-cheat {0}. El multijugador tambien lo necesita con internet.' }
+    'exe.acoffer'      = @{ en='  Add the anti-cheat too? (Y/n)'; es='  Agregar tambien el anti-cheat? (S/n)' }
 
     'badge.active'       = @{ en='  GAME MODE ON  '; es='  MODO JUEGO ACTIVO  ' }
     'badge.inactive'     = @{ en='  OFF (internet open)  '; es='  DESACTIVADO (internet abierto)  ' }
@@ -227,6 +230,17 @@ $script:Msg = @{
     'menu.wizard'      = @{ en='Setup assistant'; es='Asistente' }
     'menu.theme'       = @{ en='Switch theme'; es='Cambiar tema' }
     'menu.reset'       = @{ en='Reset settings'; es='Reiniciar configuracion' }
+    'menu.folders'     = @{ en='Game folders'; es='Carpetas de juegos' }
+
+    'folders.header'   = @{ en='  == Custom game folders (extra places to scan for games) =='; es='  == Carpetas de juegos (lugares extra donde buscar juegos) ==' }
+    'folders.none'     = @{ en='  (none yet)'; es='  (ninguna todavia)' }
+    'folders.prompt'   = @{ en="  'a' to add, a number to remove, or Enter to finish"; es="  'a' para agregar, un numero para quitar, o Enter para terminar" }
+    'folders.addpath'  = @{ en='  Folder path'; es='  Ruta de la carpeta' }
+    'folders.noexist'  = @{ en='  ! Not found: {0}'; es='  ! No existe: {0}' }
+    'folders.already'  = @{ en='  It is already in the list.'; es='  Ya esta en la lista.' }
+    'folders.added'    = @{ en='  Added: {0}'; es='  Agregada: {0}' }
+    'folders.removed'  = @{ en='  Removed: {0}'; es='  Quitada: {0}' }
+    'folders.saved'    = @{ en='Game folders updated. Open Programs to re-scan.'; es='Carpetas de juegos actualizadas. Abre Programas para volver a escanear.' }
 
     'wizard.title'     = @{ en='Setup assistant'; es='Asistente' }
     'wizard.header'    = @{ en='step {0}/{1}'; es='paso {0}/{1}' }
@@ -352,6 +366,7 @@ function New-DefaultConfig {
         lang             = ''
         theme            = 'Neon'
         profiles         = @()
+        gameFolders      = @()
     }
 }
 
@@ -369,6 +384,7 @@ function Load-Config {
                     if ($data.PSObject.Properties['lang']  -and $data.lang)  { $cfg.lang  = "$($data.lang)" }
                     if ($data.PSObject.Properties['theme'] -and $data.theme) { $cfg.theme = "$($data.theme)" }
                     if ($data.PSObject.Properties['profiles'] -and $data.profiles) { $cfg.profiles = @($data.profiles | ForEach-Object { "$_" }) }
+                    if ($data.PSObject.Properties['gameFolders'] -and $data.gameFolders) { $cfg.gameFolders = @($data.gameFolders | ForEach-Object { "$_" }) }
                 }
             }
         } catch {
@@ -896,6 +912,267 @@ function Find-Exes([string]$location, [string]$icon) {
 }
 
 # =====================================================================
+#  GAME LIBRARY PROVIDERS (Xbox / Steam / custom folders)
+# =====================================================================
+#  Registry Uninstall keys only surface classic Win32 installers. Xbox/GDK games
+#  live in <drive>:\XboxGames and Steam games under each library's steamapps\common;
+#  neither shows up there. These providers scan those roots and any folder the user
+#  adds, emitting the same {Name, Location, Icon} shape as Get-InstalledPrograms
+#  (plus a Source tag the views may ignore), so Find-Exes and the installed view
+#  work unchanged.
+
+$script:LibGamesCache = $null
+
+function Get-XboxGameFolders {
+    # 'XboxGames' at the root of every ready fixed drive (C:\XboxGames, D:\..., etc).
+    $out = New-Object System.Collections.Generic.List[string]
+    try {
+        foreach ($d in [System.IO.DriveInfo]::GetDrives()) {
+            try {
+                if ($d.DriveType -ne [System.IO.DriveType]::Fixed) { continue }
+                if (-not $d.IsReady) { continue }
+                $p = Join-Path $d.RootDirectory.FullName 'XboxGames'
+                if (Test-Path $p) { $out.Add($p) }
+            } catch {}
+        }
+    } catch {}
+    return @($out.ToArray())
+}
+
+function Get-SteamLibraryFolders {
+    # Steam base from the registry, then every 'path' in libraryfolders.vdf.
+    # Returns '<lib>\steamapps' folders (unique, existing). No VDF parser in 5.1:
+    # a line regex over the raw text covers the "path" entries fine.
+    $steam = $null
+    try { $steam = (Get-ItemProperty 'HKCU:\SOFTWARE\Valve\Steam' -ErrorAction SilentlyContinue).SteamPath } catch {}
+    if (-not $steam) {
+        try { $steam = (Get-ItemProperty 'HKLM:\SOFTWARE\WOW6432Node\Valve\Steam' -ErrorAction SilentlyContinue).InstallPath } catch {}
+    }
+    if (-not $steam) { return @() }
+    $steam = ("$steam" -replace '/', '\').TrimEnd('\')
+
+    $seen = @{}
+    $out  = New-Object System.Collections.Generic.List[string]
+    $addLib = {
+        param($base)
+        if (-not $base) { return }
+        $sa = Join-Path $base 'steamapps'
+        $norm = $sa.ToLowerInvariant()
+        if ($seen.ContainsKey($norm)) { return }
+        if (Test-Path $sa) { $seen[$norm] = $true; $out.Add($sa) }
+    }
+
+    & $addLib $steam
+    $vdf = Join-Path $steam 'steamapps\libraryfolders.vdf'
+    if (Test-Path $vdf) {
+        try {
+            $raw = Get-Content $vdf -Raw -ErrorAction SilentlyContinue
+            foreach ($m in [regex]::Matches("$raw", '"path"\s+"([^"]+)"')) {
+                $lib = ($m.Groups[1].Value -replace '\\\\', '\').Trim()
+                & $addLib $lib
+            }
+        } catch {}
+    }
+    return @($out.ToArray())
+}
+
+function Get-GamesFromFolder([string]$root, [string]$source, [string[]]$excludeNames) {
+    # One entry per valid sub-folder of $root. Xbox exes live in '<game>\Content';
+    # excluded names, runtime folders and (for Xbox) exe-less folders are skipped.
+    $out = New-Object System.Collections.Generic.List[object]
+    if (-not $root -or -not (Test-Path $root)) { return @($out.ToArray()) }
+    $ex = @{}
+    foreach ($e in @($excludeNames)) { if ($e) { $ex[$e.ToLowerInvariant()] = $true } }
+    try {
+        foreach ($dir in @(Get-ChildItem -LiteralPath $root -Directory -ErrorAction SilentlyContinue)) {
+            try {
+                if ($ex.ContainsKey($dir.Name.ToLowerInvariant())) { continue }
+                if ($dir.Name -match '(?i)^(SteamLinuxRuntime|Proton)') { continue }
+                $loc = $dir.FullName
+                if ($source -eq 'Xbox') {
+                    $content = Join-Path $dir.FullName 'Content'
+                    if (Test-Path $content) { $loc = $content }
+                    $hasExe = @(Get-ChildItem -LiteralPath $loc -Filter *.exe -Recurse -Depth 1 -ErrorAction SilentlyContinue | Select-Object -First 1)
+                    if ($hasExe.Count -eq 0) { continue }
+                }
+                $out.Add([pscustomobject]@{
+                    Name     = $dir.Name
+                    Location = $loc
+                    Icon     = $null
+                    Source   = $source
+                })
+            } catch {}
+        }
+    } catch {}
+    return @($out.ToArray())
+}
+
+function Get-CustomGameFolders {
+    # User-added roots from config.json (game folders the auto-scan does not cover).
+    $out = New-Object System.Collections.Generic.List[string]
+    try {
+        foreach ($f in @($script:Config.gameFolders)) { if ($f) { $out.Add("$f") } }
+    } catch {}
+    return @($out.ToArray())
+}
+
+function Add-CustomGameFolder([string]$path) {
+    $path = "$path".Trim().Trim('"')
+    if (-not $path) { return $false }
+    if (-not (Test-Path $path)) { Write-Host (L 'folders.noexist' $path) -ForegroundColor Red; return $false }
+    try { $path = (Resolve-Path -LiteralPath $path).Path } catch {}
+    $path = $path.TrimEnd('\')
+    $cur = @(Get-CustomGameFolders)
+    foreach ($c in $cur) {
+        if ($c.TrimEnd('\').ToLowerInvariant() -eq $path.ToLowerInvariant()) {
+            Write-Host (L 'folders.already' $path) -ForegroundColor Yellow; return $false
+        }
+    }
+    $script:Config.gameFolders = @($cur + $path)
+    try { Save-Config $script:Config } catch {}
+    $script:LibGamesCache = $null
+    Write-Host (L 'folders.added' $path) -ForegroundColor Green
+    return $true
+}
+
+function Remove-CustomGameFolder([string]$path) {
+    $path = "$path".Trim().TrimEnd('\')
+    $cur = @(Get-CustomGameFolders)
+    $new = New-Object System.Collections.Generic.List[string]
+    $removed = $false
+    foreach ($c in $cur) {
+        if ($c.TrimEnd('\').ToLowerInvariant() -eq $path.ToLowerInvariant()) { $removed = $true }
+        else { $new.Add($c) }
+    }
+    if ($removed) {
+        $script:Config.gameFolders = @($new.ToArray())
+        try { Save-Config $script:Config } catch {}
+        $script:LibGamesCache = $null
+    }
+    return $removed
+}
+
+function Get-GameLibraryProviders {
+    # Declarative provider table. GetRoots yields library folders scanned with
+    # Get-GamesFromFolder. Add Epic/GOG/EA/Ubisoft here (their own GetRoots) without
+    # touching the pipeline; a launcher that lists games directly can instead expose
+    # a GetGames scriptblock returning ready {Name, Location} objects.
+    return @(
+        @{ Name = 'Xbox';  Exclude = @('GameSave');
+           GetRoots = { Get-XboxGameFolders } },
+        @{ Name = 'Steam'; Exclude = @('Steamworks Shared', 'Steam Controller Configs');
+           GetRoots = { @(Get-SteamLibraryFolders | ForEach-Object { Join-Path $_ 'common' }) } }
+    )
+}
+
+function Get-LibraryGames {
+    # Union of every provider + the user's custom folders. Cached per session;
+    # the cache is cleared whenever custom folders change.
+    if ($null -ne $script:LibGamesCache) { return @($script:LibGamesCache) }
+    $out = New-Object System.Collections.Generic.List[object]
+    foreach ($prov in Get-GameLibraryProviders) {
+        try {
+            if ($prov.GetGames) {
+                foreach ($g in @(& $prov.GetGames)) { $out.Add($g) }
+                continue
+            }
+            foreach ($root in @(& $prov.GetRoots)) {
+                foreach ($g in @(Get-GamesFromFolder $root $prov.Name $prov.Exclude)) { $out.Add($g) }
+            }
+        } catch {}
+    }
+    foreach ($folder in @(Get-CustomGameFolders)) {
+        try {
+            if (-not (Test-Path $folder)) { continue }
+            # A bare single-game folder (exes in its root) becomes one entry; a
+            # library-style folder yields one entry per sub-folder.
+            $rootExe = @(Get-ChildItem -LiteralPath $folder -Filter *.exe -ErrorAction SilentlyContinue | Select-Object -First 1)
+            if ($rootExe.Count -gt 0) {
+                $out.Add([pscustomobject]@{ Name = (Split-Path $folder -Leaf); Location = "$folder".TrimEnd('\'); Icon = $null; Source = 'Custom' })
+            } else {
+                foreach ($g in @(Get-GamesFromFolder $folder 'Custom' @())) { $out.Add($g) }
+            }
+        } catch {}
+    }
+    $script:LibGamesCache = @($out.ToArray())
+    return @($script:LibGamesCache)
+}
+
+function Get-AllDiscoverablePrograms {
+    # Registry scan (unchanged) + game-library scan, de-duplicated by location
+    # (containment, not just equality) and by friendly name (registry entry wins).
+    $reg = @(Get-InstalledPrograms)
+    $lib = @(Get-LibraryGames)
+
+    $regLocs  = New-Object System.Collections.Generic.List[string]
+    $regNames = @{}
+    foreach ($r in $reg) {
+        if ($r.Location) { $regLocs.Add(("$($r.Location)".TrimEnd('\') + '\').ToLowerInvariant()) }
+        if ($r.Name) { $regNames["$($r.Name)".ToLowerInvariant()] = $true }
+    }
+
+    $extra   = New-Object System.Collections.Generic.List[object]
+    $seenLib = @{}
+    foreach ($g in $lib) {
+        if (-not $g.Location) { continue }
+        $gl = ("$($g.Location)".TrimEnd('\') + '\').ToLowerInvariant()
+        if ($seenLib.ContainsKey($gl)) { continue }
+        if ($regNames.ContainsKey("$($g.Name)".ToLowerInvariant())) { continue }
+        $dup = $false
+        foreach ($rl in $regLocs) {
+            if ($rl.StartsWith($gl) -or $gl.StartsWith($rl)) { $dup = $true; break }
+        }
+        if ($dup) { continue }
+        $seenLib[$gl] = $true
+        $extra.Add($g)
+    }
+
+    $combined = New-Object System.Collections.Generic.List[object]
+    foreach ($r in $reg)   { $combined.Add($r) }
+    foreach ($e in $extra) { $combined.Add($e) }
+    return @($combined.ToArray() | Sort-Object Name)
+}
+
+function Find-XboxNetworkExes([string]$location) {
+    # Reorder Find-Exes output for Xbox/GDK titles: the network binary is
+    # start_protected_game.exe (protected titles) or the real game exe, never
+    # gamelaunchhelper.exe (launcher only) or GDKStubGame.exe (stub).
+    $exes = @(Find-Exes $location $null)
+    if ($exes.Count -le 1) { return @($exes) }
+    $ranked = $exes | ForEach-Object {
+        $n = [System.IO.Path]::GetFileName($_).ToLowerInvariant()
+        $rank = 1
+        if ($n -eq 'start_protected_game.exe') { $rank = 0 }
+        elseif ($n -eq 'gamelaunchhelper.exe') { $rank = 9 }
+        elseif ($n -eq 'gdkstubgame.exe')      { $rank = 8 }
+        elseif ($n -match 'easyanticheat')     { $rank = 7 }
+        [pscustomobject]@{ Path = $_; Rank = $rank; Name = $n }
+    } | Sort-Object Rank, Name
+    return @($ranked | ForEach-Object { $_.Path })
+}
+
+function Find-AntiCheatTargets([string]$location) {
+    # Anti-cheat exe/service (EAC, BattlEye) a multiplayer title needs online too.
+    $out = New-Object System.Collections.Generic.List[object]
+    if (-not $location -or -not (Test-Path $location)) { return @($out.ToArray()) }
+    try {
+        foreach ($f in @(Get-ChildItem -LiteralPath $location -Recurse -Depth 2 -Filter 'EasyAntiCheat*.exe' -ErrorAction SilentlyContinue | Select-Object -First 4)) {
+            $out.Add([pscustomobject]@{ Kind = 'Exe'; Target = $f.FullName; Label = 'EasyAntiCheat' })
+        }
+        foreach ($f in @(Get-ChildItem -LiteralPath $location -Recurse -Depth 2 -Filter 'BEService*.exe' -ErrorAction SilentlyContinue | Select-Object -First 2)) {
+            $out.Add([pscustomobject]@{ Kind = 'Exe'; Target = $f.FullName; Label = 'BattlEye' })
+        }
+    } catch {}
+    foreach ($svcName in @('EasyAntiCheat', 'BEService')) {
+        try {
+            $s = Get-Service -Name $svcName -ErrorAction SilentlyContinue
+            if ($s) { $out.Add([pscustomobject]@{ Kind = 'Service'; Target = $s.Name; Label = "$($s.DisplayName)" }) }
+        } catch {}
+    }
+    return @($out.ToArray())
+}
+
+# =====================================================================
 #  WHITELIST OPS
 # =====================================================================
 
@@ -1256,7 +1533,7 @@ function Resolve-ProfileApps([string[]]$selected) {
         }
 
         if ($prof.DisplayNameRegex) {
-            if ($null -eq $installed) { $installed = @(Get-InstalledPrograms) }
+            if ($null -eq $installed) { $installed = @(Get-AllDiscoverablePrograms) }
             foreach ($rx in $prof.DisplayNameRegex) {
                 foreach ($prog in @($installed | Where-Object { $_.Name -match $rx })) {
                     $exes = @(Find-Exes $prog.Location $prog.Icon)
@@ -1301,20 +1578,42 @@ function Update-GameModeRules {
 
 function Select-ExeForProgram($prog) {
     Write-Host (L 'exe.searching' $prog.Name) -ForegroundColor DarkGray
-    $exes = @(Find-Exes $prog.Location $prog.Icon)
+    $isXbox = ($prog.PSObject.Properties['Source'] -and $prog.Source -eq 'Xbox')
+    if ($isXbox) { $exes = @(Find-XboxNetworkExes $prog.Location) }
+    else         { $exes = @(Find-Exes $prog.Location $prog.Icon) }
     if ($exes.Count -eq 0) {
         Write-Host (L 'exe.none') -ForegroundColor Yellow
         return
     }
+    if ($isXbox) { Write-Host (L 'exe.xboxhint') -ForegroundColor DarkGray }
     $j = 1
     foreach ($e in $exes) { Write-Host ("   {0,2}. {1}" -f $j, $e); $j++ }
     Write-Host ""
     $es = (Read-Host (L 'exe.prompt')).Trim()
+    $picked = $false
     if ($es -eq 'all') {
         foreach ($e in $exes) { Add-ToWhitelist $prog.Name $e }
+        $picked = $true
     } elseif ($es -match '^\d+$') {
         $k = [int]$es - 1
-        if ($k -ge 0 -and $k -lt $exes.Count) { Add-ToWhitelist $prog.Name $exes[$k] }
+        if ($k -ge 0 -and $k -lt $exes.Count) { Add-ToWhitelist $prog.Name $exes[$k]; $picked = $true }
+    }
+    if ($picked) { Offer-AntiCheat $prog }
+}
+
+function Offer-AntiCheat($prog) {
+    # Multiplayer titles need their anti-cheat (EAC/BattlEye) online too; offer to
+    # add whatever is found under the game folder. Default is yes (empty = yes).
+    $ac = @(Find-AntiCheatTargets $prog.Location)
+    if ($ac.Count -eq 0) { return }
+    Write-Host ''
+    Write-Host (L 'exe.acfound' $ac[0].Label) -ForegroundColor Yellow
+    $ans = (Read-Host (L 'exe.acoffer')).Trim().ToLowerInvariant()
+    if ($ans -eq 'n' -or $ans -eq 'no') { return }
+    foreach ($t in $ac) {
+        $nm = "$($prog.Name) - $($t.Label)"
+        if ($t.Kind -eq 'Service') { Add-ServiceToWhitelist $nm $t.Target }
+        else                       { Add-ToWhitelist $nm $t.Target }
     }
 }
 
@@ -1887,7 +2186,9 @@ function Build-InstalledFrame($ctx, [int]$W, [int]$H) {
             if ($i -eq $ctx.ISel) { $cur = '> ' }
             $loc = "$($prog.Location)"
             if (-not $loc) { $loc = L 'inst.noloc' }
-            $text  = $cur + (Fit "$($prog.Name)" $nameW) + '  ' + $loc
+            $nm = "$($prog.Name)"
+            if ($prog.PSObject.Properties['Source'] -and $prog.Source) { $nm += " [$($prog.Source)]" }
+            $text  = $cur + (Fit $nm $nameW) + '  ' + $loc
             $color = ''
             if ($i -eq $ctx.ISel) { $color = $p.SelItem }
             $inner.Add(@{ Text = $text; Color = $color })
@@ -2323,7 +2624,7 @@ function Invoke-OpenInstalled($ctx) {
     # look frozen while Get-InstalledPrograms runs.
     $ctx.Msg = L 'msg.reading'
     try { Write-TuiFrame (Build-MainFrame $ctx ([Console]::WindowWidth) ([Console]::WindowHeight)) } catch {}
-    $ctx.Programs   = @(Get-InstalledPrograms)
+    $ctx.Programs   = @(Get-AllDiscoverablePrograms)
     $ctx.ISel       = 0
     $ctx.IScroll    = 0
     $ctx.Filter     = ''
@@ -2460,11 +2761,47 @@ function Request-ResetConfig($ctx) {
 function Open-SystemMenu($ctx) {
     # The 'More' popup: actions that do not fit the top button bar.
     $mi = New-Object System.Collections.Generic.List[object]
+    $mi.Add(@{ Id = 'folders';  Label = (L 'menu.folders') })
     $mi.Add(@{ Id = 'repair';   Label = (L 'menu.repair') })
     $mi.Add(@{ Id = 'wizard';   Label = (L 'menu.wizard') })
     $mi.Add(@{ Id = 'theme';    Label = (L 'menu.theme') })
     $mi.Add(@{ Id = 'resetcfg'; Label = (L 'menu.reset') })
     $ctx.Menu = @{ Items = $mi.ToArray(); Sel = 0; Title = (L 'menu.system.title') }
+}
+
+function Invoke-ManageFolders($ctx) {
+    # Add/remove custom game folders in line mode (same low-risk pattern as
+    # Add-by-path). Editing persists to config.json and drops the scan cache so
+    # the next Programs view picks the change up.
+    Invoke-LineMode {
+        while ($true) {
+            Write-Host (L 'folders.header') -ForegroundColor Cyan
+            $cur = @(Get-CustomGameFolders)
+            if ($cur.Count -eq 0) {
+                Write-Host (L 'folders.none') -ForegroundColor DarkGray
+            } else {
+                $j = 1
+                foreach ($c in $cur) { Write-Host ("   {0,2}. {1}" -f $j, $c); $j++ }
+            }
+            Write-Host ''
+            $ans = (Read-Host (L 'folders.prompt')).Trim()
+            if (-not $ans) { break }
+            if ($ans.ToLowerInvariant() -eq 'a') {
+                $np = (Read-Host (L 'folders.addpath')).Trim().Trim('"')
+                if ($np) { Add-CustomGameFolder $np | Out-Null }
+            } elseif ($ans -match '^\d+$') {
+                $idx = [int]$ans - 1
+                if ($idx -ge 0 -and $idx -lt $cur.Count) {
+                    if (Remove-CustomGameFolder $cur[$idx]) { Write-Host (L 'folders.removed' $cur[$idx]) -ForegroundColor Green }
+                }
+            } else {
+                break
+            }
+            Write-Host ''
+        }
+    }
+    $script:LibGamesCache = $null
+    $ctx.Msg = L 'folders.saved'
 }
 
 function Apply-WizardLang($ctx) {
@@ -2604,6 +2941,7 @@ function Invoke-MenuKey($ctx, $k) {
                         $ctx.Msg = L 'msg.detail' $it.Name $it.Target
                     }
                 }
+                'folders'  { Invoke-ManageFolders $ctx }
                 'repair'   { Invoke-RepairRequest $ctx }
                 'wizard'   { Start-Wizard $ctx }
                 'theme'    { Toggle-Theme $ctx }
